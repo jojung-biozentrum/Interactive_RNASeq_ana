@@ -1,0 +1,16 @@
+﻿/* Gene gradients: drag-to-reorder level list */
+.grad-ord-item {
+  cursor: grab;
+  user-select: none;
+  padding: 0.35rem 0.6rem;
+  margin-bottom: 0.25rem;
+  background: #fff;
+  border: 1px solid #dee2e6;
+  border-radius: 0.25rem;
+  font-size: 0.875rem;
+}
+.grad-ord-item:active { cursor: grabbing; }
+.grad-ord-item.grad-ord-drag-over {
+  border-color: #2c3e50;
+  background: #eaf0f6;
+}

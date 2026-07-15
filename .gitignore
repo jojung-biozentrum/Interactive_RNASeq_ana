@@ -1,6 +1,9 @@
 # exclude compiled binaries and external models
 /bin
 
+#exclude cursor agent files
+.cursor/
+
 # exclude data from source control by default
 /data
 /results
@@ -8,6 +11,7 @@
 /data/temp
 /data/processed
 /data/raw
+/_demo_project
 # exclude figs
 /figs
 
