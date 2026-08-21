@@ -8,11 +8,16 @@ import pandas as pd
 import plotly.graph_objects as go
 
 from ..components.controls import (
+    EXPORT_H,
+    EXPORT_W,
     aesthetic_options,
     aesthetic_panel,
+    apply_export_layout,
     build_scatter,
     equal_xy_axes,
+    fig_size_controls,
     parse_aes_choice,
+    set_fig_size,
 )
 from ..components.sample_detail import plot_with_sample_detail, register_sample_detail_callback
 from ..data_store import SessionData, session_from_store
@@ -128,19 +133,19 @@ def _scatter_single(
     )
     layout_kw = dict(
         title=title_dict,
-        height=560,
         uirevision="umap-scatter",
         showlegend=True,
-        margin=dict(l=40, r=20, t=40 + 22 * title_lines, b=40),
     )
     if zcol:
         fig.update_layout(
             scene=dict(xaxis_title=x_col, yaxis_title=y_col, zaxis_title=zcol),
             **layout_kw,
         )
+        apply_export_layout(fig, title_lines=title_lines, legend=True, uirevision="umap-scatter")
     else:
-        fig.update_layout(xaxis_title=x_col, yaxis_title=y_col, width=560, **layout_kw)
+        fig.update_layout(xaxis_title=x_col, yaxis_title=y_col, **layout_kw)
         fig = equal_xy_axes(fig, score_df, x_col, y_col)
+        apply_export_layout(fig, title_lines=title_lines, legend=True, uirevision="umap-scatter")
     return fig
 
 
@@ -185,20 +190,32 @@ def _scatter_split(
     title_lines = str(title_dict.get("text", "")).count("<br>") + 1
     layout_kw = dict(
         title=title_dict,
-        height=560,
         uirevision="umap-scatter",
         legend_title_text=split_col,
         showlegend=True,
-        margin=dict(l=40, r=20, t=40 + 22 * title_lines, b=40),
     )
     if zcol:
         fig.update_layout(
             scene=dict(xaxis_title=x_col, yaxis_title=y_col, zaxis_title=zcol),
             **layout_kw,
         )
+        apply_export_layout(
+            fig,
+            title_lines=title_lines,
+            legend=True,
+            legend_kwargs={"title_text": split_col},
+            uirevision="umap-scatter",
+        )
     else:
-        fig.update_layout(xaxis_title=x_col, yaxis_title=y_col, width=560, **layout_kw)
+        fig.update_layout(xaxis_title=x_col, yaxis_title=y_col, **layout_kw)
         fig = equal_xy_axes(fig, score_df, x_col, y_col)
+        apply_export_layout(
+            fig,
+            title_lines=title_lines,
+            legend=True,
+            legend_kwargs={"title_text": split_col},
+            uirevision="umap-scatter",
+        )
     return fig
 
 
@@ -353,6 +370,7 @@ class UMAPModule:
                     className="text-muted small mb-2",
                 ),
                 html.Div(id="umap-aes-panels"),
+                fig_size_controls("umap", default_width=EXPORT_W, default_height=EXPORT_H),
                 dcc.Loading(
                     plot_with_sample_detail(
                         "umap-scatter",
@@ -520,10 +538,14 @@ class UMAPModule:
             Input("umap-z", "value"),
             Input("umap-split-col", "value"),
             Input("umap-group-aes", "data"),
+            Input("umap-fig-w", "value"),
+            Input("umap-fig-h", "value"),
             Input("session-store", "data"),
             Input("ds-active", "value"),
         )
-        def _replot(cache, x_col, y_col, z_col, split_col, group_aes, session_blob, active):
+        def _replot(
+            cache, x_col, y_col, z_col, split_col, group_aes, fig_w, fig_h, session_blob, active
+        ):
             empty = go.Figure()
             if not cache:
                 return empty
@@ -545,21 +567,23 @@ class UMAPModule:
                 if split_col and split_col in score_df.columns:
                     levels = [str(v) for v in score_df[split_col].astype(str).unique()]
                     merged = {lv: {**_DEFAULT_AES, **group_aes.get(lv, {})} for lv in levels}
-                    return _scatter_split(
+                    fig = _scatter_split(
                         score_df, x_col, y_col, z_col, split_col, merged, title=title
                     )
-                raw = {**_DEFAULT_AES, **group_aes.get(_AES_ALL, {})}
-                return _scatter_single(
-                    score_df,
-                    x_col,
-                    y_col,
-                    z_col,
-                    raw.get("color"),
-                    raw.get("shape"),
-                    raw.get("size"),
-                    raw.get("alpha"),
-                    title=title,
-                )
+                else:
+                    raw = {**_DEFAULT_AES, **group_aes.get(_AES_ALL, {})}
+                    fig = _scatter_single(
+                        score_df,
+                        x_col,
+                        y_col,
+                        z_col,
+                        raw.get("color"),
+                        raw.get("shape"),
+                        raw.get("size"),
+                        raw.get("alpha"),
+                        title=title,
+                    )
+                return set_fig_size(fig, fig_w, fig_h)
             except Exception as exc:  # noqa: BLE001
                 err = go.Figure()
                 err.add_annotation(text=f"Plot error: {exc}", showarrow=False)

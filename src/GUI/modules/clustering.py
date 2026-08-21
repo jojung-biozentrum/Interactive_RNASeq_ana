@@ -16,6 +16,12 @@ from scipy.stats import false_discovery_control
 from sklearn.decomposition import PCA
 
 from ..components.folder_browser import pick_save_file_dialog
+from ..components.controls import (
+    EXPORT_H,
+    EXPORT_W,
+    fig_size_controls,
+    set_fig_size,
+)
 from ..components.gene_meta_mark import (
     entry_dropdown_options,
     genes_with_meta_entry,
@@ -129,7 +135,11 @@ def volcano_cluster_vs_cluster(
             ).pvalue
             for gene in expr_a.index
         }
-    ) # Welch's t-test for each gene
+    ) 
+    # Welch's t-test for each gene: we don't have a lot of replicates, 
+    # so we use the Welch's t-test instead of DESeq2 or other statistically more elaborate models
+    # The basic assumption is that a gene is Gaussian distributed within each group (different variances)
+    # NOTE: maybe, later on, we can do some more sophisticated model for biofilms
     padj = pd.Series(
         false_discovery_control(p_values.fillna(1).values),
         index=p_values.index,
@@ -491,6 +501,11 @@ class ClusteringModule:
                         dcc.Tab(label="Samples × genes", value="sg"),
                     ],
                 ),
+                fig_size_controls(
+                    "hc-heat",
+                    default_width=760,
+                    default_height=640,
+                ),
                 dbc.Row(
                     [
                         dbc.Col(
@@ -582,6 +597,29 @@ class ClusteringModule:
                                 ),
                             ],
                             className="g-2 mb-2",
+                        ),
+                        dbc.Row(
+                            [
+                                dbc.Col(
+                                    fig_size_controls(
+                                        "hc-pca",
+                                        default_width=EXPORT_W,
+                                        default_height=EXPORT_H,
+                                        heading="PCA size (px)",
+                                    ),
+                                    md=5,
+                                ),
+                                dbc.Col(
+                                    fig_size_controls(
+                                        "hc-dendro",
+                                        default_width=EXPORT_W,
+                                        default_height=360,
+                                        heading="Dendrogram size (px)",
+                                    ),
+                                    md=4,
+                                ),
+                            ],
+                            className="g-2 mb-1",
                         ),
                         dbc.Row(
                             [
@@ -711,6 +749,11 @@ class ClusteringModule:
                             col_id="hc-volcano-mark-col",
                             entry_id="hc-volcano-mark-entry",
                             wrap_id="hc-volcano-mark-wrap",
+                        ),
+                        fig_size_controls(
+                            "hc-volcano",
+                            default_width=640,
+                            default_height=520,
                         ),
                         dcc.Loading(
                             dbc.Row(
@@ -1005,9 +1048,11 @@ class ClusteringModule:
             Input("hc-cache", "data"),
             Input("hc-heatmap-tabs", "value"),
             Input("hc-maxclust-applied", "data"),
+            Input("hc-heat-fig-w", "value"),
+            Input("hc-heat-fig-h", "value"),
             Input("session-store", "data"),
         )
-        def _plot_heatmap(cache, tab, t, session_blob):
+        def _plot_heatmap(cache, tab, t, fig_w, fig_h, session_blob):
             empty = go.Figure()
             if not cache or "Z_samples" not in _HC_RUNTIME:
                 return empty
@@ -1018,10 +1063,14 @@ class ClusteringModule:
                 t = max(2, min(int(t or 2), n))
                 labels = _cut_clusters(rt["Z_samples"], t)
                 if tab == "gg":
-                    return _gene_distance_fig(rt, dataset=dataset, t=t)
-                if tab == "sg":
-                    return _sample_gene_fig(rt, labels, dataset=dataset, t=t)
-                return _sample_distance_fig(rt, labels, dataset=dataset, t=t)
+                    fig = _gene_distance_fig(rt, dataset=dataset, t=t)
+                elif tab == "sg":
+                    fig = _sample_gene_fig(rt, labels, dataset=dataset, t=t)
+                else:
+                    fig = _sample_distance_fig(rt, labels, dataset=dataset, t=t)
+                return set_fig_size(
+                    fig, fig_w, fig_h, default_width=760, default_height=640
+                )
             except Exception as exc:  # noqa: BLE001
                 err = go.Figure()
                 err.add_annotation(text=f"Heatmap error: {exc}", showarrow=False)
@@ -1118,9 +1167,26 @@ class ClusteringModule:
             Input("hc-pca-z", "value"),
             Input("hc-heatmap-tabs", "value"),
             Input("hc-cluster-sel", "data"),
+            Input("hc-pca-fig-w", "value"),
+            Input("hc-pca-fig-h", "value"),
+            Input("hc-dendro-fig-w", "value"),
+            Input("hc-dendro-fig-h", "value"),
             Input("session-store", "data"),
         )
-        def _plot_pca(cache, t, x_col, y_col, z_col, tab, selected, session_blob):
+        def _plot_pca(
+            cache,
+            t,
+            x_col,
+            y_col,
+            z_col,
+            tab,
+            selected,
+            pca_w,
+            pca_h,
+            dendro_w,
+            dendro_h,
+            session_blob,
+        ):
             empty = go.Figure()
             if tab != "ss" or not cache or "Z_samples" not in _HC_RUNTIME:
                 return empty, empty
@@ -1142,23 +1208,29 @@ class ClusteringModule:
                 f"in {dataset} ({t} clusters)",
             )
             try:
+                pca_fig = pca_cluster_fig(
+                    score_df,
+                    labels,
+                    x_col,
+                    y_col,
+                    z_col,
+                    selected=sel,
+                    bin_a=bins["a"],
+                    bin_b=bins["b"],
+                    title=pca_title,
+                )
+                dendro_fig = dendrogram_colored_fig(
+                    rt["Z_samples"],
+                    labels,
+                    rt["sample_ids"],
+                    selected=sel,
+                    bin_a=bins["a"],
+                    bin_b=bins["b"],
+                )
                 return (
-                    pca_cluster_fig(
-                        score_df,
-                        labels,
-                        x_col,
-                        y_col,
-                        z_col,
-                        selected=sel,
-                        title=pca_title,
-                    ),
-                    dendrogram_colored_fig(
-                        rt["Z_samples"],
-                        labels,
-                        rt["sample_ids"],
-                        selected=sel,
-                        bin_a=bins["a"],
-                        bin_b=bins["b"],
+                    set_fig_size(pca_fig, pca_w, pca_h),
+                    set_fig_size(
+                        dendro_fig, dendro_w, dendro_h, default_height=360
                     ),
                 )
             except Exception as exc:  # noqa: BLE001
@@ -1208,10 +1280,14 @@ class ClusteringModule:
             State("hc-volcano-padj", "value"),
             State("hc-volcano-fc", "value"),
             State("hc-volcano-center", "value"),
+            State("hc-volcano-fig-w", "value"),
+            State("hc-volcano-fig-h", "value"),
             State("session-store", "data"),
             prevent_initial_call=True,
         )
-        def _run_volcano(n_clicks, selected, t, padj_thr, fc_thr, center, session_blob):
+        def _run_volcano(
+            n_clicks, selected, t, padj_thr, fc_thr, center, fig_w, fig_h, session_blob
+        ):
             empty = go.Figure()
             hide = {"display": "none"}
             show = {"display": "block"}
@@ -1292,6 +1368,9 @@ class ClusteringModule:
                 fold_change_threshold=fc_thr,
                 xaxis_title=x_label,
             )
+            fig = set_fig_size(
+                fig, fig_w, fig_h, default_width=640, default_height=520
+            )
             mark_cols = locus_mark_columns(rt.get("locus_lookup"))
             mark_opts = [{"label": c, "value": c} for c in mark_cols]
             mark_wrap = show if mark_cols else hide
@@ -1310,9 +1389,11 @@ class ClusteringModule:
             Output("hc-volcano", "figure", allow_duplicate=True),
             Input("hc-volcano-mark-col", "value"),
             Input("hc-volcano-mark-entry", "value"),
+            Input("hc-volcano-fig-w", "value"),
+            Input("hc-volcano-fig-h", "value"),
             prevent_initial_call=True,
         )
-        def _replot_volcano_marks(mark_col, mark_entry):
+        def _replot_volcano_marks(mark_col, mark_entry, fig_w, fig_h):
             results = _HC_RUNTIME.get("volcano_results")
             meta = _HC_RUNTIME.get("volcano_plot_meta")
             if results is None or not meta:
@@ -1321,7 +1402,7 @@ class ClusteringModule:
                 _HC_RUNTIME.get("locus_lookup"), mark_col, mark_entry
             )
             mark_label = f"{mark_col}={mark_entry}" if mark_col and mark_entry else None
-            return volcano_fig_from_results(
+            fig = volcano_fig_from_results(
                 results,
                 title=meta["title"],
                 neg_log10_padj_threshold=meta["padj_thr"],
@@ -1329,6 +1410,9 @@ class ClusteringModule:
                 xaxis_title=meta["xaxis_title"],
                 mark_genes=mark_genes,
                 mark_label=mark_label,
+            )
+            return set_fig_size(
+                fig, fig_w, fig_h, default_width=640, default_height=520
             )
 
         @app.callback(

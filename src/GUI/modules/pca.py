@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from dash import ALL, Dash, Input, Output, State, dcc, html, no_update
+from dash import ALL, Dash, Input, Output, State, callback_context, dcc, html, no_update
 import dash_bootstrap_components as dbc
 import numpy as np
 import pandas as pd
@@ -17,11 +17,17 @@ from src.GUI.components.gene_scores import weighed_genes_from_pc
 from src.GUI.project import resolve_celov_id_col
 
 from ..components.controls import (
+    EXPORT_H,
+    EXPORT_PCA_SCREE_H,
+    EXPORT_W,
     aesthetic_options,
     aesthetic_panel,
+    apply_export_layout,
     build_scatter,
     equal_xy_axes,
+    fig_size_controls,
     parse_aes_choice,
+    set_fig_size,
 )
 from ..components.sample_detail import plot_with_sample_detail, register_sample_detail_callback
 from ..components.folder_browser import pick_file_dialog, pick_save_file_dialog
@@ -106,17 +112,16 @@ def _combine_pca_and_variance(scatter: go.Figure, var_ratio, title: dict | str) 
     title_lines = str(title_dict.get("text", "")).count("<br>") + 1
     is_3d = any(getattr(tr, "type", None) == "scatter3d" for tr in scatter.data)
     if is_3d:
-        scatter.update_layout(
-            title=title_dict,
-            margin=dict(l=40, r=20, t=40 + 22 * title_lines, b=40),
-        )
+        scatter.update_layout(title=title_dict)
+        apply_export_layout(scatter, title_lines=title_lines, legend=True, uirevision="pca-scatter")
         return scatter
 
+    # Compact PCA on top (inset-like), scree underneath — same outer width as other figs
     fig = make_subplots(
         rows=2,
         cols=1,
-        row_heights=[0.72, 0.28],
-        vertical_spacing=0.12,
+        row_heights=[0.68, 0.32],
+        vertical_spacing=0.14,
         subplot_titles=("", "Variance explained"),
     )
     for tr in scatter.data:
@@ -144,14 +149,18 @@ def _combine_pca_and_variance(scatter: go.Figure, var_ratio, title: dict | str) 
     )
     fig.update_traces(cliponaxis=False, selector=dict(type="bar"))
 
-    fig.update_layout(
-        title=title_dict,
-        height=760,
-        width=560,
+    fig.update_layout(title=title_dict)
+    leg_title = None
+    if scatter.layout.legend and scatter.layout.legend.title:
+        leg_title = scatter.layout.legend.title.text
+    apply_export_layout(
+        fig,
+        title_lines=title_lines,
+        width=EXPORT_W,
+        height=EXPORT_PCA_SCREE_H,
+        legend=True,
+        legend_kwargs={"title_text": leg_title} if leg_title else None,
         uirevision="pca-scatter",
-        showlegend=True,
-        legend=dict(title_text=scatter.layout.legend.title.text if scatter.layout.legend and scatter.layout.legend.title else None),
-        margin=dict(l=50, r=20, t=40 + 22 * title_lines, b=50),
     )
     return fig
 
@@ -229,7 +238,7 @@ def _scatter_single(
         title=title,
         **aes,
     )
-    layout_kw = dict(height=560, uirevision="pca-scatter", showlegend=True)
+    layout_kw = dict(uirevision="pca-scatter", showlegend=True)
     if zcol:
         fig.update_layout(
             scene=dict(
@@ -239,9 +248,11 @@ def _scatter_single(
             ),
             **layout_kw,
         )
+        apply_export_layout(fig, title_lines=1, legend=True, uirevision="pca-scatter")
     else:
-        fig.update_layout(xaxis_title=xlab, yaxis_title=ylab, width=560, **layout_kw)
+        fig.update_layout(xaxis_title=xlab, yaxis_title=ylab, **layout_kw)
         fig = equal_xy_axes(fig, score_df, x_col, y_col)
+        apply_export_layout(fig, title_lines=1, legend=True, uirevision="pca-scatter")
     return fig
 
 
@@ -282,13 +293,12 @@ def _scatter_split(score_df, x_col, y_col, z_col, split_col, group_aes: dict, va
             tr.showlegend = True
             fig.add_trace(tr)
 
+    title_lines = 1
     layout_kw = dict(
         title=f"PCA (split by {split_col})",
-        height=560,
         uirevision="pca-scatter",
         legend_title_text=split_col,
         showlegend=True,
-        margin=dict(l=40, r=20, t=50, b=40),
     )
     if zcol:
         fig.update_layout(
@@ -299,9 +309,23 @@ def _scatter_split(score_df, x_col, y_col, z_col, split_col, group_aes: dict, va
             ),
             **layout_kw,
         )
+        apply_export_layout(
+            fig,
+            title_lines=title_lines,
+            legend=True,
+            legend_kwargs={"title_text": split_col},
+            uirevision="pca-scatter",
+        )
     else:
-        fig.update_layout(xaxis_title=xlab, yaxis_title=ylab, width=560, **layout_kw)
+        fig.update_layout(xaxis_title=xlab, yaxis_title=ylab, **layout_kw)
         fig = equal_xy_axes(fig, score_df, x_col, y_col)
+        apply_export_layout(
+            fig,
+            title_lines=title_lines,
+            legend=True,
+            legend_kwargs={"title_text": split_col},
+            uirevision="pca-scatter",
+        )
     return fig
 
 
@@ -394,6 +418,11 @@ class PCAModule:
                     className="text-muted small mb-2",
                 ),
                 html.Div(id="pca-aes-panels"),
+                fig_size_controls(
+                    "pca",
+                    default_width=EXPORT_W,
+                    default_height=EXPORT_PCA_SCREE_H,
+                ),
                 dcc.Loading(
                     plot_with_sample_detail(
                         "pca-scatter",
@@ -529,6 +558,11 @@ class PCAModule:
                     className="g-2 mb-2",
                 ),
                 dbc.Button("Run linear classifier", id="pca-clf-run", color="primary", className="mb-2"),
+                fig_size_controls(
+                    "pca-clf",
+                    default_width=EXPORT_W,
+                    default_height=EXPORT_H,
+                ),
                 dcc.Graph(
                     id="pca-clf-perf",
                     figure=go.Figure(),
@@ -826,20 +860,51 @@ class PCAModule:
             Output("pca-clf-perf", "figure"),
             Output("pca-clf-status", "children"),
             Input("pca-clf-run", "n_clicks"),
+            Input("pca-clf-fig-w", "value"),
+            Input("pca-clf-fig-h", "value"),
             State("pca-cache", "data"),
             State("pca-clf-label", "value"),
             State("pca-clf-positive", "value"),
             State("pca-clf-pc-min", "value"),
             State("pca-clf-pc-max", "value"),
             State("pca-clf-gene-pcs", "value"),
+            State("pca-clf-cache", "data"),
             State("session-store", "data"),
             State("ds-active", "value"),
             prevent_initial_call=True,
         )
         def _run_classifier(
-            n_clicks, cache, label_col, positive, pc_min, pc_max, gene_pcs, session_blob, active
+            n_clicks,
+            fig_w,
+            fig_h,
+            cache,
+            label_col,
+            positive,
+            pc_min,
+            pc_max,
+            gene_pcs,
+            clf_cache,
+            session_blob,
+            active,
         ):
             empty = go.Figure()
+            triggered = callback_context.triggered_id
+            dataset = _active_dataset_name(session_blob, active)
+
+            if triggered in ("pca-clf-fig-w", "pca-clf-fig-h"):
+                if not clf_cache or not clf_cache.get("perf"):
+                    return no_update, no_update, no_update
+                perf = pd.DataFrame(clf_cache["perf"])
+                fig = performance_figure(
+                    perf,
+                    title=_plotly_title(
+                        f"Linear Classifier on PCs for {dataset}",
+                        f"split on {clf_cache.get('label_col')} "
+                        f"(positive = {clf_cache.get('positive')})",
+                    ),
+                )
+                return no_update, set_fig_size(fig, fig_w, fig_h), no_update
+
             if not cache or "score_df" not in _PCA_RUNTIME:
                 return no_update, empty, "Run PCA first."
             if not label_col or positive is None or positive == "":
@@ -848,7 +913,6 @@ class PCAModule:
                 score_df = _PCA_RUNTIME["score_df"]
                 y = encode_binary_labels(score_df[label_col], positive)
                 perf = classifier_performance(score_df, y, int(pc_min or 2), int(pc_max or 12))
-                dataset = _active_dataset_name(session_blob, active)
                 fig = performance_figure(
                     perf,
                     title=_plotly_title(
@@ -856,10 +920,11 @@ class PCAModule:
                         f"split on {label_col} (positive = {positive})",
                     ),
                 )
+                fig = set_fig_size(fig, fig_w, fig_h)
                 res2 = fit_pc_classifier(score_df, y, 2)
                 n_gene = int(gene_pcs or 5)
                 res_g = fit_pc_classifier(score_df, y, n_gene)
-                clf_cache = {
+                new_cache = {
                     "label_col": label_col,
                     "positive": str(positive),
                     "perf": perf.to_dict(orient="list") if perf is not None else {},
@@ -872,12 +937,12 @@ class PCAModule:
                     "cv_gene": float(res_g["cv_acc"]) if res_g else None,
                 }
                 msg = (
-                    f"Classifier done. 2-PC CV={clf_cache['cv2']:.3f}; "
-                    f"{n_gene}-PC train={clf_cache['train_gene']:.3f}, CV={clf_cache['cv_gene']:.3f}."
+                    f"Classifier done. 2-PC CV={new_cache['cv2']:.3f}; "
+                    f"{n_gene}-PC train={new_cache['train_gene']:.3f}, CV={new_cache['cv_gene']:.3f}."
                     if res2 and res_g
                     else "Classifier finished with missing fits (check class sizes / n_pcs)."
                 )
-                return clf_cache, fig, msg
+                return new_cache, fig, msg
             except Exception as exc:  # noqa: BLE001
                 return no_update, empty, f"Classifier error: {exc}"
 
@@ -891,11 +956,24 @@ class PCAModule:
             Input("pca-group-aes", "data"),
             Input("pca-clf-cache", "data"),
             Input("pca-clf-overlay", "value"),
+            Input("pca-fig-w", "value"),
+            Input("pca-fig-h", "value"),
             Input("session-store", "data"),
             Input("ds-active", "value"),
         )
         def _replot(
-            cache, x_col, y_col, z_col, split_col, group_aes, clf_cache, overlay, session_blob, active
+            cache,
+            x_col,
+            y_col,
+            z_col,
+            split_col,
+            group_aes,
+            clf_cache,
+            overlay,
+            fig_w,
+            fig_h,
+            session_blob,
+            active,
         ):
             empty = go.Figure()
             if not cache:
@@ -945,7 +1023,10 @@ class PCAModule:
                     scatter = add_decision_boundary(
                         scatter, score_df, clf_cache["w2"], clf_cache["b2"], name=name
                     )
-                return _combine_pca_and_variance(scatter, var, title)
+                fig = _combine_pca_and_variance(scatter, var, title)
+                return set_fig_size(
+                    fig, fig_w, fig_h, default_height=EXPORT_PCA_SCREE_H
+                )
             except Exception as exc:  # noqa: BLE001
                 err = go.Figure()
                 err.add_annotation(text=f"Plot error: {exc}", showarrow=False)

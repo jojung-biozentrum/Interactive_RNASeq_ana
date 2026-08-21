@@ -1218,8 +1218,11 @@ class GeneGradientsModule:
             Input("grad-dr-thr-kendall", "value"),
             Input("grad-mark-col", "value"),
             Input("grad-mark-entry", "value"),
+            Input("grad-selected-genes", "data"),
         )
-        def _replot(cache, rho_p, dr_p, rho_s, dr_s, rho_k, dr_k, mark_col, mark_entry):
+        def _replot(
+            cache, rho_p, dr_p, rho_s, dr_s, rho_k, dr_k, mark_col, mark_entry, selected_genes
+        ):
             empty = go.Figure()
             results = _GRAD_RUNTIME.get("results")
             if not cache or results is None or not isinstance(results, pd.DataFrame):
@@ -1242,12 +1245,22 @@ class GeneGradientsModule:
             dataset = cache.get("dataset") or "dataset"
             subset = cache.get("subset") or ""
             order_col = cache.get("order_col") or "order"
-            mark_genes = genes_with_meta_entry(
+            meta_mark = genes_with_meta_entry(
                 _GRAD_RUNTIME.get("locus_lookup"),
                 mark_col,
                 mark_entry,
             )
-            mark_label = f"{mark_col}={mark_entry}" if mark_col and mark_entry else None
+            click_sel = {str(g) for g in (selected_genes or []) if g}
+            # Clicked profile genes stay red on correlation / pairwise plots
+            mark_genes = set(meta_mark or []) | click_sel
+            if mark_col and mark_entry and click_sel:
+                mark_label = f"{mark_col}={mark_entry} + selected"
+            elif mark_col and mark_entry:
+                mark_label = f"{mark_col}={mark_entry}"
+            elif click_sel:
+                mark_label = "selected"
+            else:
+                mark_label = None
 
             measure_figs = []
             for method in methods:

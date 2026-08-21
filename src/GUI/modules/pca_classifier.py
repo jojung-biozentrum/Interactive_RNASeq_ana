@@ -14,6 +14,7 @@ from src.biocyc.celov_multiomics_post import (
     annotate_gene_table,
     celov_multiomics_file_generation,
 )
+from src.GUI.components.controls import apply_export_layout
 from src.GUI.components.gene_scores import weighed_genes_from_classifier
 
 
@@ -112,15 +113,13 @@ def performance_figure(perf_df: pd.DataFrame, title: str | dict) -> go.Figure:
         xaxis_title="Number of PCs",
         yaxis_title="Accuracy",
         xaxis=dict(tickmode="linear", dtick=1),
-        height=420,
-        margin=dict(l=40, r=20, t=40 + 22 * title_lines, b=80),
-        legend=dict(
-            orientation="h",
-            yanchor="top",
-            y=-0.22,
-            xanchor="center",
-            x=0.5,
-        ),
+    )
+    # Same outer size as PCA (not full-page wide); legend outside to the right
+    apply_export_layout(
+        fig,
+        title_lines=title_lines,
+        legend=True,
+        uirevision="pca-clf-perf",
     )
     return fig
 

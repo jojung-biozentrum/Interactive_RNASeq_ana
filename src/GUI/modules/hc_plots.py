@@ -9,7 +9,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from scipy.cluster import hierarchy
 
-from ..components.controls import equal_xy_axes
+from ..components.controls import apply_export_layout, equal_xy_axes
 from ..components.gene_meta_mark import add_marked_gene_trace, gene_mark_mask
 from ..components.sample_detail import (
     gene_detail_table,
@@ -328,6 +328,8 @@ def pca_cluster_fig(
     z_col: str | None = None,
     *,
     selected: list[int] | None = None,
+    bin_a: list[int] | None = None,
+    bin_b: list[int] | None = None,
     title: str | dict | None = None,
 ) -> go.Figure:
     df = score_df.copy()
@@ -352,32 +354,46 @@ def pca_cluster_fig(
     if zcol:
         fig = px.scatter_3d(plot_df, x=x_col, y=y_col, z=zcol, **common)
         fig.update_traces(hovertemplate="%{hovertext}<extra></extra>")
-        layout_kw = dict(height=560, uirevision="hc-pca", legend=dict(title_text="Cluster"))
     else:
         fig = px.scatter(plot_df, x=x_col, y=y_col, **common)
         fig.update_traces(hovertemplate="%{hovertext}<extra></extra>")
-        layout_kw = dict(
-            height=560, width=560, uirevision="hc-pca", legend=dict(title_text="Cluster")
-        )
         fig = equal_xy_axes(fig, df, x_col, y_col)
+    title_lines = 1
     if isinstance(title, dict):
         title_lines = str(title.get("text", "")).count("<br>") + 1
-        layout_kw["title"] = title
-        layout_kw["margin"] = dict(l=40, r=20, t=40 + 22 * title_lines, b=40)
-    fig.update_layout(**layout_kw)
-    sel = {str(int(c)) for c in (selected or [])}
-    if sel:
-        for tr in fig.data:
-            name = str(tr.name) if tr.name is not None else ""
-            if name in sel:
-                tr.marker.size = 12
-                if hasattr(tr.marker, "line"):
-                    tr.marker.line = dict(width=2, color="#111111")
-                else:
-                    tr.update(marker_line=dict(width=2, color="#111111"))
+        fig.update_layout(title=title)
+    apply_export_layout(
+        fig,
+        title_lines=title_lines,
+        legend=True,
+        legend_kwargs={"title_text": "Cluster"},
+        uirevision="hc-pca",
+    )
+    set_a = {str(int(c)) for c in (bin_a or [])}
+    set_b = {str(int(c)) for c in (bin_b or [])}
+    sel = {str(int(c)) for c in (selected or [])} or (set_a | set_b)
+    for tr in fig.data:
+        name = str(tr.name) if tr.name is not None else ""
+        if name in set_a:
+            # Bin A → crosses
+            tr.marker.symbol = "cross"
+            tr.marker.size = 12
+            if hasattr(tr.marker, "line"):
+                tr.marker.line = dict(width=1.5, color="#111111")
             else:
-                tr.marker.opacity = 0.35
-                tr.marker.size = 7
+                tr.update(marker_line=dict(width=1.5, color="#111111"))
+        elif name in set_b:
+            # Bin B → filled circles
+            tr.marker.symbol = "circle"
+            tr.marker.size = 12
+            if hasattr(tr.marker, "line"):
+                tr.marker.line = dict(width=1.5, color="#111111")
+            else:
+                tr.update(marker_line=dict(width=1.5, color="#111111"))
+        elif sel and name not in sel:
+            tr.marker.opacity = 0.35
+            tr.marker.size = 7
+            tr.marker.symbol = "circle"
     return fig
 
 
@@ -394,6 +410,8 @@ def dendrogram_colored_fig(
     leaves, leaf_clusters = _leaf_clusters_in_dendro_order(Z, labels)
     a = [int(c) for c in (bin_a or [])]
     b = [int(c) for c in (bin_b or [])]
+    set_a = set(a)
+    set_b = set(b)
     selected_set = {int(c) for c in (selected if selected is not None else (a + b))}
     fig = go.Figure()
     for xs, ys, color in dendro_polylines(
@@ -423,17 +441,29 @@ def dendrogram_colored_fig(
     )
     for cid in sorted(set(leaf_clusters)):
         sub = df_leaf.loc[df_leaf["cid"] == cid]
+        in_a = int(cid) in set_a
+        in_b = int(cid) in set_b
         is_sel = int(cid) in selected_set
+        if in_a:
+            symbol = "cross"
+            suffix = " (A)"
+        elif in_b:
+            symbol = "circle"
+            suffix = " (B)"
+        else:
+            symbol = "circle"
+            suffix = ""
         fig.add_trace(
             go.Scatter(
                 x=sub["x"],
                 y=sub["y"],
                 mode="markers",
-                name=cluster_label(cid) + (" ✓" if is_sel else ""),
+                name=cluster_label(cid) + suffix,
                 text=sub["name"],
                 customdata=[[int(cid)]] * len(sub),
                 hovertemplate="cluster %{customdata[0]}<br>%{text}<extra></extra>",
                 marker=dict(
+                    symbol=symbol,
                     size=14 if is_sel else 9,
                     color=_cluster_color(cid),
                     line=dict(width=2 if is_sel else 0, color="#111111"),
@@ -452,13 +482,17 @@ def dendrogram_colored_fig(
             "x": 0.5,
             "xanchor": "center",
         },
-        height=360,
-        margin=dict(l=40, r=20, t=70, b=40),
         xaxis=dict(visible=False, range=[-0.5, len(leaves) - 0.5]),
         yaxis_title="distance",
-        uirevision=f"hc-dendro-v2-{_brace(a)}-{_brace(b)}-{len(set(labels))}",
-        legend=dict(title_text="Cluster"),
         clickmode="event+select",
+    )
+    apply_export_layout(
+        fig,
+        title_lines=2,
+        height=360,
+        legend=True,
+        legend_kwargs={"title_text": "Cluster"},
+        uirevision=f"hc-dendro-v2-{_brace(a)}-{_brace(b)}-{len(set(labels))}",
     )
     return fig
 
@@ -524,15 +558,17 @@ def volcano_fig_from_results(
         title=title_dict,
         xaxis_title=xaxis_title,
         yaxis_title="-log10(padj)",
-        height=520,
-        width=640,
         # Include thresholds so dashed lines refresh (uirevision freezes layout otherwise)
-        uirevision=f"hc-volcano-{padj_thr:g}-{fc_thr:g}",
-        showlegend=bool(n_mark),
-        legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01),
-        margin=dict(l=60, r=20, t=40 + 22 * title_lines, b=60),
         clickmode="event+select",
         hovermode="closest",
+    )
+    apply_export_layout(
+        fig,
+        title_lines=title_lines,
+        width=640,
+        height=520,
+        legend=bool(n_mark),
+        uirevision=f"hc-volcano-{padj_thr:g}-{fc_thr:g}",
     )
     return fig
 

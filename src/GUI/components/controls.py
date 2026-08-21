@@ -76,6 +76,156 @@ _SYMBOL_CYCLE = [
     "pentagon",
 ]
 
+# Inkscape-ready export canvas: compact square plot + legend strip outside
+EXPORT_PLOT = 420
+EXPORT_LEGEND_W = 150
+EXPORT_W = EXPORT_PLOT + EXPORT_LEGEND_W
+EXPORT_H = EXPORT_PLOT + 60
+# PCA + scree: smaller PCA panel, same outer width as other export figs
+EXPORT_PCA_SCREE_H = 560
+
+
+def outside_legend(**extra) -> dict:
+    """Legend parked to the right of the plot domain (not over data)."""
+    base = dict(
+        x=1.02,
+        y=1.0,
+        xanchor="left",
+        yanchor="top",
+        bgcolor="rgba(255,255,255,0.9)",
+        borderwidth=0,
+        itemsizing="constant",
+        tracegroupgap=2,
+        font=dict(size=11),
+    )
+    base.update(extra)
+    return base
+
+
+def export_margins(title_lines: int = 1, *, legend: bool = True, bottom: int = 50) -> dict:
+    """Margins that keep axis labels inside and the legend outside on the right."""
+    return dict(
+        l=55,
+        r=EXPORT_LEGEND_W if legend else 40,
+        t=36 + 22 * max(1, int(title_lines)),
+        b=bottom,
+    )
+
+
+def apply_export_layout(
+    fig: go.Figure,
+    *,
+    title_lines: int = 1,
+    width: int | None = EXPORT_W,
+    height: int | None = EXPORT_H,
+    legend: bool = True,
+    legend_kwargs: dict | None = None,
+    uirevision: str | None = None,
+    bottom: int = 50,
+) -> go.Figure:
+    """Fixed pixel size + outside legend for drop-in SVG/Inkscape use."""
+    layout: dict = {
+        "margin": export_margins(title_lines, legend=legend, bottom=bottom),
+        "showlegend": legend,
+    }
+    if width is not None:
+        layout["width"] = int(width)
+    if height is not None:
+        layout["height"] = int(height)
+    if legend:
+        layout["legend"] = outside_legend(**(legend_kwargs or {}))
+    if uirevision is not None:
+        layout["uirevision"] = uirevision
+    fig.update_layout(**layout)
+    return fig
+
+
+def coerce_fig_size(
+    width,
+    height,
+    *,
+    default_width: int = EXPORT_W,
+    default_height: int = EXPORT_H,
+    min_size: int = 200,
+) -> tuple[int, int]:
+    """Clamp interactive width/height inputs to usable pixel sizes."""
+    try:
+        w = int(width) if width is not None and str(width).strip() != "" else int(default_width)
+    except (TypeError, ValueError):
+        w = int(default_width)
+    try:
+        h = int(height) if height is not None and str(height).strip() != "" else int(default_height)
+    except (TypeError, ValueError):
+        h = int(default_height)
+    return max(min_size, w), max(min_size, h)
+
+
+def set_fig_size(
+    fig: go.Figure,
+    width=None,
+    height=None,
+    *,
+    default_width: int = EXPORT_W,
+    default_height: int = EXPORT_H,
+) -> go.Figure:
+    """Override figure pixel size (keeps margins/legend from ``apply_export_layout``)."""
+    w, h = coerce_fig_size(
+        width, height, default_width=default_width, default_height=default_height
+    )
+    fig.update_layout(width=w, height=h)
+    return fig
+
+
+def fig_size_controls(
+    prefix: str,
+    *,
+    default_width: int = EXPORT_W,
+    default_height: int = EXPORT_H,
+    heading: str | None = "Figure size (px)",
+) -> html.Div:
+    """Width/height number inputs; ids are ``{prefix}-fig-w`` / ``{prefix}-fig-h``."""
+    kids: list = []
+    if heading:
+        kids.append(html.Span(heading, className="small text-muted me-2"))
+    kids.append(
+        dbc.Row(
+            [
+                dbc.Col(
+                    [
+                        html.Label("Width", className="small mb-0"),
+                        dbc.Input(
+                            id=f"{prefix}-fig-w",
+                            type="number",
+                            value=int(default_width),
+                            min=200,
+                            step=10,
+                            className="form-control-sm",
+                        ),
+                    ],
+                    xs=6,
+                    md=2,
+                ),
+                dbc.Col(
+                    [
+                        html.Label("Height", className="small mb-0"),
+                        dbc.Input(
+                            id=f"{prefix}-fig-h",
+                            type="number",
+                            value=int(default_height),
+                            min=200,
+                            step=10,
+                            className="form-control-sm",
+                        ),
+                    ],
+                    xs=6,
+                    md=2,
+                ),
+            ],
+            className="g-2 mb-2 align-items-end",
+        )
+    )
+    return html.Div(kids, className="mb-1")
+
 
 def const_value(v: str) -> str:
     return f"{CONST}{v}"
@@ -371,7 +521,7 @@ def build_scatter(
             marker_updates["size"] = float(size_const)
         if marker_updates:
             fig.update_traces(marker=marker_updates)
-        fig.update_layout(margin=dict(l=40, r=20, t=50, b=40), showlegend=True)
+        apply_export_layout(fig, title_lines=1, legend=True)
         return fig
 
     # --- 2D: one data trace + separate legend entries per aesthetic (seaborn-style) ---
@@ -508,12 +658,8 @@ def build_scatter(
             first_in_group=True,
         )
 
-    fig.update_layout(
-        title=title,
-        margin=dict(l=40, r=20, t=50, b=40),
-        showlegend=True,
-        legend=dict(itemsizing="constant", bgcolor="rgba(255,255,255,0.7)"),
-    )
+    fig.update_layout(title=title)
+    apply_export_layout(fig, title_lines=1, legend=True)
     return fig
 
 
