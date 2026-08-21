@@ -74,6 +74,10 @@ ipython_config.py
 # PEP 582; used by e.g. github.com/David-OConnor/pyflow
 __pypackages__/
 
+# Secret dashboard login (dash_auth BasicAuth)
+.secret*.toml
+**/.secret*.toml
+
 # Environments
 .env
 .venv

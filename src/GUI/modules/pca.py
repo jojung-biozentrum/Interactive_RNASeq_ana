@@ -1,8 +1,6 @@
-"""PCA: interactive scatter + variance barplot, optional linear classifier, Celov export."""
+"""PCA: interactive scatter + variance barplot, optional linear classifier."""
 
 from __future__ import annotations
-
-from pathlib import Path
 
 from dash import ALL, Dash, Input, Output, State, callback_context, dcc, html, no_update
 import dash_bootstrap_components as dbc
@@ -12,9 +10,6 @@ import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from sklearn.decomposition import PCA
-
-from src.GUI.components.gene_scores import weighed_genes_from_pc
-from src.GUI.project import resolve_celov_id_col
 
 from ..components.controls import (
     EXPORT_H,
@@ -30,16 +25,13 @@ from ..components.controls import (
     set_fig_size,
 )
 from ..components.sample_detail import plot_with_sample_detail, register_sample_detail_callback
-from ..components.folder_browser import pick_file_dialog, pick_save_file_dialog
 from ..data_store import SessionData, session_from_store
 from .pca_classifier import (
     add_decision_boundary,
-    build_weighed_genes,
     classifier_performance,
     encode_binary_labels,
     fit_pc_classifier,
     performance_figure,
-    save_classifier_celov,
 )
 
 _AES_ALL = "__all__"
@@ -432,77 +424,11 @@ class PCAModule:
                     type="default",
                 ),
                 html.Hr(),
-                html.H6("Save weighed genes (PC, Celov)"),
-                dbc.Row(
-                    [
-                        dbc.Col(
-                            [
-                                html.Label("PC"),
-                                dcc.Dropdown(id="pca-weight-pc", placeholder="PC1", clearable=False),
-                            ],
-                            md=2,
-                        ),
-                        dbc.Col(
-                            [
-                                html.Label("Locus lookup CSV (optional)"),
-                                dbc.InputGroup(
-                                    [
-                                        dbc.Input(id="pca-pc-locus", type="text"),
-                                        dbc.Button(
-                                            "Browse…",
-                                            id="pca-pc-locus-browse",
-                                            color="info",
-                                            outline=True,
-                                        ),
-                                    ]
-                                ),
-                            ],
-                            md=4,
-                        ),
-                        dbc.Col(
-                            [
-                                html.Label("Output path ({} = type)"),
-                                dbc.InputGroup(
-                                    [
-                                        dbc.Input(id="pca-weight-out", type="text"),
-                                        dbc.Button(
-                                            "Browse…",
-                                            id="pca-weight-browse",
-                                            color="info",
-                                            outline=True,
-                                        ),
-                                    ]
-                                ),
-                            ],
-                            md=4,
-                        ),
-                        dbc.Col(
-                            [
-                                html.Label("Genes"),
-                                dcc.RadioItems(
-                                    id="pca-weight-celov-mode",
-                                    options=[
-                                        {"label": "up & down", "value": "up_and_down"},
-                                        {"label": "up", "value": "up"},
-                                        {"label": "down", "value": "down"},
-                                        {"label": "all together", "value": "all"},
-                                    ],
-                                    value="up_and_down",
-                                    inline=True,
-                                ),
-                            ],
-                            md=3,
-                        ),
-                    ],
-                    className="g-2 mb-2",
-                ),
-                dbc.Button("Save Celov", id="pca-weight-save", color="secondary", className="mb-2"),
-                html.Hr(),
                 html.H6("Linear classifier"),
                 html.P(
                     "Same as the notebook: sklearn LogisticRegression on PC scores → "
                     "train accuracy and CV balanced accuracy vs number of PCs; optional "
-                    "2-PC decision boundary; Celov weighed-gene .txt export.",
+                    "2-PC decision boundary.",
                     className="text-muted small",
                 ),
                 dbc.Row(
@@ -537,13 +463,6 @@ class PCAModule:
                         ),
                         dbc.Col(
                             [
-                                html.Label("Genes: n PCs"),
-                                dbc.Input(id="pca-clf-gene-pcs", type="number", value=5, min=2, step=1),
-                            ],
-                            md=2,
-                        ),
-                        dbc.Col(
-                            [
                                 html.Br(),
                                 dbc.Checklist(
                                     id="pca-clf-overlay",
@@ -552,7 +471,7 @@ class PCAModule:
                                     inline=True,
                                 ),
                             ],
-                            md=3,
+                            md=4,
                         ),
                     ],
                     className="g-2 mb-2",
@@ -573,77 +492,6 @@ class PCAModule:
                             "filename": "pca_classifier_performance",
                         },
                     },
-                ),
-                html.Div(
-                    id="pca-clf-celov-section",
-                    style={"display": "none"},
-                    children=[
-                        html.H6("Save weighed genes (Celov)", className="mt-3"),
-                        dbc.Row(
-                            [
-                                dbc.Col(
-                                    [
-                                        html.Label(
-                                            "Locus lookup CSV (optional; Celov ID column is set on the dataset)"
-                                        ),
-                                        dbc.InputGroup(
-                                            [
-                                                dbc.Input(id="pca-clf-locus", type="text"),
-                                                dbc.Button(
-                                                    "Browse…",
-                                                    id="pca-clf-locus-browse",
-                                                    color="info",
-                                                    outline=True,
-                                                ),
-                                            ]
-                                        ),
-                                    ],
-                                    md=5,
-                                ),
-                                dbc.Col(
-                                    [
-                                        html.Label("Output path ({} = type)"),
-                                        dbc.InputGroup(
-                                            [
-                                                dbc.Input(id="pca-clf-celov-out", type="text"),
-                                                dbc.Button(
-                                                    "Browse…",
-                                                    id="pca-clf-celov-browse",
-                                                    color="info",
-                                                    outline=True,
-                                                ),
-                                            ]
-                                        ),
-                                    ],
-                                    md=4,
-                                ),
-                                dbc.Col(
-                                    [
-                                        html.Label("Genes"),
-                                        dcc.RadioItems(
-                                            id="pca-clf-celov-mode",
-                                            options=[
-                                                {"label": "up & down", "value": "up_and_down"},
-                                                {"label": "up", "value": "up"},
-                                                {"label": "down", "value": "down"},
-                                                {"label": "all together", "value": "all"},
-                                            ],
-                                            value="up_and_down",
-                                            inline=True,
-                                        ),
-                                    ],
-                                    md=3,
-                                ),
-                            ],
-                            className="g-2 mb-2",
-                        ),
-                        dbc.Button(
-                            "Save Celov",
-                            id="pca-clf-celov-save",
-                            color="secondary",
-                            className="mb-2",
-                        ),
-                    ],
                 ),
                 html.Div(id="pca-clf-status", className="text-muted small mb-2"),
                 html.Div(id="pca-status", className="text-muted small"),
@@ -748,11 +596,9 @@ class PCAModule:
             Output("pca-x", "options"),
             Output("pca-y", "options"),
             Output("pca-z", "options"),
-            Output("pca-weight-pc", "options"),
             Output("pca-x", "value"),
             Output("pca-y", "value"),
             Output("pca-z", "value"),
-            Output("pca-weight-pc", "value"),
             Input("pca-run", "n_clicks"),
             State("session-store", "data"),
             prevent_initial_call=True,
@@ -763,8 +609,6 @@ class PCAModule:
                 return (
                     no_update,
                     session.error or "Load datasets first.",
-                    no_update,
-                    no_update,
                     no_update,
                     no_update,
                     no_update,
@@ -798,18 +642,14 @@ class PCAModule:
                     opts,
                     opts,
                     opts,
-                    opts,
                     "PC1" if n_pcs >= 1 else None,
                     "PC2" if n_pcs >= 2 else ("PC1" if n_pcs >= 1 else None),
                     None,
-                    "PC1" if n_pcs >= 1 else None,
                 )
             except Exception as exc:  # noqa: BLE001
                 return (
                     no_update,
                     f"PCA error: {exc}",
-                    no_update,
-                    no_update,
                     no_update,
                     no_update,
                     no_update,
@@ -847,15 +687,6 @@ class PCAModule:
             return opts, value
 
         @app.callback(
-            Output("pca-clf-celov-section", "style"),
-            Input("pca-clf-cache", "data"),
-        )
-        def _toggle_celov(clf_cache):
-            if clf_cache:
-                return {"display": "block"}
-            return {"display": "none"}
-
-        @app.callback(
             Output("pca-clf-cache", "data", allow_duplicate=True),
             Output("pca-clf-perf", "figure"),
             Output("pca-clf-status", "children"),
@@ -867,7 +698,6 @@ class PCAModule:
             State("pca-clf-positive", "value"),
             State("pca-clf-pc-min", "value"),
             State("pca-clf-pc-max", "value"),
-            State("pca-clf-gene-pcs", "value"),
             State("pca-clf-cache", "data"),
             State("session-store", "data"),
             State("ds-active", "value"),
@@ -882,7 +712,6 @@ class PCAModule:
             positive,
             pc_min,
             pc_max,
-            gene_pcs,
             clf_cache,
             session_blob,
             active,
@@ -922,8 +751,6 @@ class PCAModule:
                 )
                 fig = set_fig_size(fig, fig_w, fig_h)
                 res2 = fit_pc_classifier(score_df, y, 2)
-                n_gene = int(gene_pcs or 5)
-                res_g = fit_pc_classifier(score_df, y, n_gene)
                 new_cache = {
                     "label_col": label_col,
                     "positive": str(positive),
@@ -931,15 +758,10 @@ class PCAModule:
                     "w2": list(map(float, res2["w"])) if res2 else None,
                     "b2": float(res2["b"]) if res2 else None,
                     "cv2": float(res2["cv_acc"]) if res2 else None,
-                    "gene_pcs": n_gene,
-                    "w_gene": list(map(float, res_g["w"])) if res_g else None,
-                    "train_gene": float(res_g["train_acc"]) if res_g else None,
-                    "cv_gene": float(res_g["cv_acc"]) if res_g else None,
                 }
                 msg = (
-                    f"Classifier done. 2-PC CV={new_cache['cv2']:.3f}; "
-                    f"{n_gene}-PC train={new_cache['train_gene']:.3f}, CV={new_cache['cv_gene']:.3f}."
-                    if res2 and res_g
+                    f"Classifier done. 2-PC CV={new_cache['cv2']:.3f}."
+                    if res2
                     else "Classifier finished with missing fits (check class sizes / n_pcs)."
                 )
                 return new_cache, fig, msg
@@ -1031,205 +853,6 @@ class PCAModule:
                 err = go.Figure()
                 err.add_annotation(text=f"Plot error: {exc}", showarrow=False)
                 return err
-
-        @app.callback(
-            Output("pca-pc-locus", "value"),
-            Output("pca-clf-locus", "value"),
-            Input("ds-active", "value"),
-            Input("project-store", "data"),
-        )
-        def _sync_locus_from_active(active, blob):
-            if not blob or not active:
-                return "", ""
-            name = active if isinstance(active, str) else (active[0] if active else None)
-            entry = next(
-                (d for d in blob.get("datasets", []) if d.get("name") == name),
-                None,
-            )
-            if not entry:
-                return "", ""
-            locus = entry.get("locus_lookup") or ""
-            root = blob.get("root")
-            if locus and root and not Path(locus).is_absolute():
-                locus = str(Path(root) / locus)
-            return locus, locus
-
-        @app.callback(
-            Output("pca-pc-locus", "value", allow_duplicate=True),
-            Output("pca-status", "children", allow_duplicate=True),
-            Input("pca-pc-locus-browse", "n_clicks"),
-            State("pca-pc-locus", "value"),
-            State("project-store", "data"),
-            prevent_initial_call=True,
-        )
-        def _browse_pc_locus(n_clicks, current, project_blob):
-            initial = (project_blob or {}).get("root") or current
-            chosen = pick_file_dialog(initial=initial, title="Select locus lookup CSV")
-            if not chosen:
-                return no_update, "Locus browse cancelled."
-            return chosen, f"Locus lookup: {chosen}"
-
-        @app.callback(
-            Output("pca-weight-out", "value"),
-            Output("pca-status", "children", allow_duplicate=True),
-            Input("pca-weight-browse", "n_clicks"),
-            State("pca-weight-out", "value"),
-            State("pca-weight-pc", "value"),
-            State("project-store", "data"),
-            prevent_initial_call=True,
-        )
-        def _browse_weight(n_clicks, current, pc, project_blob):
-            initial = (project_blob or {}).get("root") or current
-            pc_name = pc or "PC1"
-            chosen = pick_save_file_dialog(
-                initial=initial,
-                title="Save Celov weighed genes (use {} for type)",
-                defaultextension=".txt",
-                initialfile=f"PCA_{pc_name}_{{}}.txt",
-            )
-            if not chosen:
-                return no_update, "Celov path browse cancelled."
-            p = Path(chosen)
-            if "{}" not in p.name:
-                chosen = str(p.with_name(f"{p.stem}_{{}}{p.suffix or '.txt'}"))
-            return chosen, f"Celov output template: {chosen}"
-
-        @app.callback(
-            Output("pca-status", "children", allow_duplicate=True),
-            Input("pca-weight-save", "n_clicks"),
-            State("pca-weight-pc", "value"),
-            State("pca-weight-out", "value"),
-            State("pca-weight-celov-mode", "value"),
-            State("pca-pc-locus", "value"),
-            State("project-store", "data"),
-            State("ds-active", "value"),
-            prevent_initial_call=True,
-        )
-        def _save_pc_celov(n_clicks, pc, out_path, mode, locus_path, project_blob, active):
-            if "loadings" not in _PCA_RUNTIME:
-                return "Run PCA first."
-            if not pc:
-                return "Choose a PC for weighed genes."
-            if not out_path or not str(out_path).strip():
-                return "Choose an output .txt path (Browse)."
-            try:
-                from src.biocyc.celov_multiomics_post import load_locus_lookup
-
-                weighed = weighed_genes_from_pc(_PCA_RUNTIME["loadings"], str(pc))
-                lookup = None
-                if locus_path and str(locus_path).strip():
-                    lookup = load_locus_lookup(str(locus_path).strip())
-                name = active if isinstance(active, str) else (active[0] if active else None)
-                entry = next(
-                    (
-                        d
-                        for d in (project_blob or {}).get("datasets", [])
-                        if d.get("name") == name
-                    ),
-                    None,
-                )
-                paths = save_classifier_celov(
-                    weighed,
-                    str(out_path).strip(),
-                    mode=mode or "up_and_down",
-                    locus_lookup=lookup,
-                    id_column=resolve_celov_id_col(entry),
-                )
-                return f"Saved Celov ({pc}): " + ", ".join(str(p) for p in paths)
-            except Exception as exc:  # noqa: BLE001
-                return f"Celov save error: {exc}"
-
-        @app.callback(
-            Output("pca-clf-locus", "value", allow_duplicate=True),
-            Output("pca-clf-status", "children", allow_duplicate=True),
-            Input("pca-clf-locus-browse", "n_clicks"),
-            State("pca-clf-locus", "value"),
-            State("project-store", "data"),
-            prevent_initial_call=True,
-        )
-        def _browse_locus(n_clicks, current, project_blob):
-            initial = (project_blob or {}).get("root") or current
-            chosen = pick_file_dialog(initial=initial, title="Select locus lookup CSV")
-            if not chosen:
-                return no_update, "Locus browse cancelled."
-            return chosen, f"Locus lookup: {chosen}"
-
-        @app.callback(
-            Output("pca-clf-celov-out", "value"),
-            Output("pca-clf-status", "children", allow_duplicate=True),
-            Input("pca-clf-celov-browse", "n_clicks"),
-            State("pca-clf-celov-out", "value"),
-            State("project-store", "data"),
-            prevent_initial_call=True,
-        )
-        def _browse_celov(n_clicks, current, project_blob):
-            initial = (project_blob or {}).get("root") or current
-            chosen = pick_save_file_dialog(
-                initial=initial,
-                title="Save Celov weighed genes (use {} for type)",
-                defaultextension=".txt",
-                initialfile="PCA_LinearClass_{}.txt",
-            )
-            if not chosen:
-                return no_update, "Celov path browse cancelled."
-            p = Path(chosen)
-            if "{}" not in p.name:
-                chosen = str(p.with_name(f"{p.stem}_{{}}{p.suffix or '.txt'}"))
-            return chosen, f"Celov output template: {chosen}"
-
-        @app.callback(
-            Output("pca-clf-status", "children", allow_duplicate=True),
-            Input("pca-clf-celov-save", "n_clicks"),
-            State("pca-clf-cache", "data"),
-            State("pca-clf-celov-out", "value"),
-            State("pca-clf-celov-mode", "value"),
-            State("pca-clf-locus", "value"),
-            State("pca-clf-gene-pcs", "value"),
-            State("project-store", "data"),
-            State("ds-active", "value"),
-            prevent_initial_call=True,
-        )
-        def _save_celov(
-            n_clicks, clf_cache, out_path, mode, locus_path, gene_pcs, project_blob, active
-        ):
-            if not clf_cache or not clf_cache.get("w_gene"):
-                return "Run the linear classifier first."
-            if not out_path or not str(out_path).strip():
-                return "Choose an output .txt path (Browse)."
-            if "loadings" not in _PCA_RUNTIME:
-                return "Run PCA first."
-            try:
-                from src.biocyc.celov_multiomics_post import load_locus_lookup
-
-                n_pcs = int(clf_cache.get("gene_pcs") or gene_pcs or 5)
-                weighed = build_weighed_genes(
-                    _PCA_RUNTIME["loadings"],
-                    _PCA_RUNTIME["explained_variance"],
-                    np.asarray(clf_cache["w_gene"], dtype=float),
-                    n_pcs,
-                )
-                lookup = None
-                if locus_path and str(locus_path).strip():
-                    lookup = load_locus_lookup(str(locus_path).strip())
-                name = active if isinstance(active, str) else (active[0] if active else None)
-                entry = next(
-                    (
-                        d
-                        for d in (project_blob or {}).get("datasets", [])
-                        if d.get("name") == name
-                    ),
-                    None,
-                )
-                paths = save_classifier_celov(
-                    weighed,
-                    str(out_path).strip(),
-                    mode=mode or "up_and_down",
-                    locus_lookup=lookup,
-                    id_column=resolve_celov_id_col(entry),
-                )
-                return "Saved Celov: " + ", ".join(str(p) for p in paths)
-            except Exception as exc:  # noqa: BLE001
-                return f"Celov save error: {exc}"
 
         register_sample_detail_callback(
             app,

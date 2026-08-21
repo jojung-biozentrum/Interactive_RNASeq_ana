@@ -1,0 +1,17 @@
+[Unit]
+Description=Interactive RNA-seq viewer (read-only Dash app)
+After=network.target
+Requires=nginx.service
+
+[Service]
+User=lab
+Group=lab
+WorkingDirectory=/home/lab/Interactive_RNASeq_ana
+Environment=PYTHONPATH=/home/lab/Interactive_RNASeq_ana
+Environment=DASH_URL_BASE_PATHNAME=/interactive/
+Environment=DASH_DEFAULT_PROJECT=/home/lab/www/dashboard/interactive-project
+Environment=DASH_SECRET_CONFIG=/home/lab/www/dashboard/.secret-rna-seq-viewer.toml
+ExecStart=/home/lab/anaconda3/envs/plotly/bin/gunicorn --log-level=debug --timeout 900 --workers 2 src.GUI.wsgi:server -b :8052
+
+[Install]
+WantedBy=multi-user.target

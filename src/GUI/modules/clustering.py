@@ -15,7 +15,6 @@ from scipy.spatial.distance import pdist, squareform
 from scipy.stats import false_discovery_control
 from sklearn.decomposition import PCA
 
-from ..components.folder_browser import pick_save_file_dialog
 from ..components.controls import (
     EXPORT_H,
     EXPORT_W,
@@ -45,9 +44,7 @@ from .hc_plots import (
     _leaf_clusters_in_dendro_order,
     cluster_label,
 )
-from .pca_classifier import save_classifier_celov
 from src.biocyc.celov_multiomics_post import load_locus_lookup
-from src.GUI.project import resolve_celov_id_col
 
 
 _GRAPH_CONFIG = {
@@ -179,21 +176,6 @@ def _expr_genes_x_samples(rt: dict) -> pd.DataFrame:
         rt["X"].T,
         index=pd.Index(rt["gene_ids"], name="geneID"),
         columns=rt["sample_ids"],
-    )
-
-
-def _volcano_weighed_for_celov(results: pd.DataFrame, score: str) -> pd.DataFrame:
-    """Build gene_weight table for Celov; direction from expression difference sign."""
-    fold = results["fold_change"].astype(float)
-    neg = results["neg_log10_padj"].astype(float)
-    if score == "neg_log10_padj":
-        weight = np.sign(fold.replace(0, np.nan)).fillna(0.0) * neg
-    elif score == "product":
-        weight = fold * neg
-    else:
-        weight = fold
-    return pd.DataFrame(
-        {"geneID": results["geneID"].astype(str).values, "gene_weight": weight.values}
     )
 
 
@@ -535,37 +517,6 @@ class ClusteringModule:
                     ],
                     className="g-2 mb-3",
                 ),
-                html.H6("Export cluster assignments"),
-                html.P(
-                    "Exports sample metadata with an added column named "
-                    "maxclust :{t} (current cut).",
-                    className="text-muted small mb-2",
-                ),
-                dbc.Row(
-                    [
-                        dbc.Col(
-                            dbc.InputGroup(
-                                [
-                                    dbc.Input(id="hc-export-path", type="text"),
-                                    dbc.Button(
-                                        "Browse…",
-                                        id="hc-export-browse",
-                                        color="info",
-                                        outline=True,
-                                    ),
-                                ]
-                            ),
-                            md=8,
-                        ),
-                        dbc.Col(
-                            dbc.Button(
-                                "Export CSV", id="hc-export", color="secondary"
-                            ),
-                            md=2,
-                        ),
-                    ],
-                    className="g-2 mb-2",
-                ),
                 html.Div(id="hc-status", className="text-muted small mb-2"),
                 html.Div(
                     id="hc-pca-section",
@@ -789,89 +740,6 @@ class ClusteringModule:
                             type="default",
                         ),
                         dcc.Store(id="hc-volcano-last-gene", data=None),
-                        html.H6("Save volcano genes (Celov)", className="mt-3"),
-                        dbc.Row(
-                            [
-                                dbc.Col(
-                                    [
-                                        html.Label("Score"),
-                                        dcc.Dropdown(
-                                            id="hc-volcano-celov-score",
-                                            options=[
-                                                {
-                                                    "label": "expression difference",
-                                                    "value": "fold_change",
-                                                },
-                                                {
-                                                    "label": "−log10(padj)",
-                                                    "value": "neg_log10_padj",
-                                                },
-                                                {
-                                                    "label": "product of both",
-                                                    "value": "product",
-                                                },
-                                            ],
-                                            value="fold_change",
-                                            clearable=False,
-                                        ),
-                                    ],
-                                    md=3,
-                                ),
-                                dbc.Col(
-                                    [
-                                        html.Label("Genes"),
-                                        dcc.RadioItems(
-                                            id="hc-volcano-celov-mode",
-                                            options=[
-                                                {
-                                                    "label": "up & down",
-                                                    "value": "up_and_down",
-                                                },
-                                                {"label": "up", "value": "up"},
-                                                {"label": "down", "value": "down"},
-                                                {
-                                                    "label": "all together",
-                                                    "value": "all",
-                                                },
-                                            ],
-                                            value="up_and_down",
-                                            inline=True,
-                                        ),
-                                    ],
-                                    md=4,
-                                ),
-                                dbc.Col(
-                                    [
-                                        html.Label("Output path ({} = type)"),
-                                        dbc.InputGroup(
-                                            [
-                                                dbc.Input(
-                                                    id="hc-volcano-celov-out", type="text"
-                                                ),
-                                                dbc.Button(
-                                                    "Browse…",
-                                                    id="hc-volcano-celov-browse",
-                                                    color="info",
-                                                    outline=True,
-                                                ),
-                                            ]
-                                        ),
-                                    ],
-                                    md=4,
-                                ),
-                            ],
-                            className="g-2 mb-2",
-                        ),
-                        dbc.Button(
-                            "Save Celov",
-                            id="hc-volcano-celov-save",
-                            color="secondary",
-                            className="mb-2",
-                        ),
-                        html.Div(
-                            id="hc-volcano-celov-status",
-                            className="text-muted small mb-2",
-                        ),
                         dcc.Store(id="hc-cluster-sel", data=_empty_bin_sel()),
                     ],
                 ),
@@ -1454,113 +1322,3 @@ class ClusteringModule:
             if not last_gene:
                 return gene_detail_placeholder()
             return gene_detail_table(str(last_gene), _HC_RUNTIME.get("locus_lookup"))
-
-        @app.callback(
-            Output("hc-volcano-celov-out", "value"),
-            Output("hc-volcano-celov-status", "children", allow_duplicate=True),
-            Input("hc-volcano-celov-browse", "n_clicks"),
-            State("hc-volcano-celov-out", "value"),
-            State("project-store", "data"),
-            prevent_initial_call=True,
-        )
-        def _browse_volcano_celov(n_clicks, current, project_blob):
-            initial = (project_blob or {}).get("root") or current
-            chosen = pick_save_file_dialog(
-                initial=initial,
-                title="Save volcano Celov (use {} for type)",
-                defaultextension=".txt",
-                initialfile="HC_Volcano_{}.txt",
-            )
-            if not chosen:
-                return no_update, "Celov path browse cancelled."
-            p = Path(chosen)
-            if "{}" not in p.name:
-                chosen = str(p.with_name(f"{p.stem}_{{}}{p.suffix or '.txt'}"))
-            return chosen, f"Celov output template: {chosen}"
-
-        @app.callback(
-            Output("hc-volcano-celov-status", "children"),
-            Input("hc-volcano-celov-save", "n_clicks"),
-            State("hc-volcano-celov-out", "value"),
-            State("hc-volcano-celov-mode", "value"),
-            State("hc-volcano-celov-score", "value"),
-            State("session-store", "data"),
-            State("project-store", "data"),
-            prevent_initial_call=True,
-        )
-        def _save_volcano_celov(
-            n_clicks, out_path, mode, score, session_blob, project_blob
-        ):
-            results = _HC_RUNTIME.get("volcano_results")
-            if results is None or not isinstance(results, pd.DataFrame) or results.empty:
-                return "Run volcano first."
-            if not out_path or not str(out_path).strip():
-                return "Choose an output .txt path (Browse)."
-            try:
-                weighed = _volcano_weighed_for_celov(results, score or "fold_change")
-                lookup = None
-                locus = _locus_path_from_session(session_blob, project_blob)
-                if locus:
-                    lookup = load_locus_lookup(locus)
-                paths = save_classifier_celov(
-                    weighed,
-                    str(out_path).strip(),
-                    mode=mode or "up_and_down",
-                    locus_lookup=lookup,
-                    id_column=resolve_celov_id_col(
-                        _active_dataset_entry(session_blob, project_blob)
-                    ),
-                )
-                return "Saved Celov: " + ", ".join(str(p) for p in paths)
-            except Exception as exc:  # noqa: BLE001
-                return f"Celov save error: {exc}"
-
-        @app.callback(
-            Output("hc-export-path", "value"),
-            Output("hc-status", "children", allow_duplicate=True),
-            Input("hc-export-browse", "n_clicks"),
-            State("hc-export-path", "value"),
-            State("project-store", "data"),
-            prevent_initial_call=True,
-        )
-        def _browse_export(n_clicks, current, project_blob):
-            initial = (project_blob or {}).get("root") or current
-            chosen = pick_save_file_dialog(
-                initial=initial,
-                title="Export HC cluster assignments",
-                defaultextension=".csv",
-                initialfile="hc_clusters.csv",
-            )
-            if not chosen:
-                return no_update, "Export browse cancelled."
-            return chosen, f"Export path: {chosen}"
-
-        @app.callback(
-            Output("hc-status", "children", allow_duplicate=True),
-            Input("hc-export", "n_clicks"),
-            State("hc-export-path", "value"),
-            State("hc-maxclust-applied", "data"),
-            prevent_initial_call=True,
-        )
-        def _export(n_clicks, path, t):
-            if "Z_samples" not in _HC_RUNTIME:
-                return "Run clustering first."
-            if not path or not str(path).strip():
-                return "Choose an export path (Browse)."
-            rt = _HC_RUNTIME
-            t = max(2, min(int(t or 2), rt["n_samples"]))
-            labels = _cut_clusters(rt["Z_samples"], t)
-            out = rt["score_df"].copy()
-            cluster_col = f"maxclust :{t}"
-            out.insert(0, cluster_col, labels)
-            cols = [c for c in ["fileName", cluster_col] if c in out.columns]
-            extra = [
-                c
-                for c in out.columns
-                if c not in cols and not (c.startswith("PC") and c[2:].isdigit())
-            ]
-            out = out[cols + extra]
-            p = Path(str(path).strip())
-            p.parent.mkdir(parents=True, exist_ok=True)
-            out.to_csv(p, index=True, index_label="sample_id")
-            return f"Exported {len(out)} samples with column {cluster_col!r} → {p}"

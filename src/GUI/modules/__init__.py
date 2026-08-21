@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from .clustering import ClusteringModule
 from .condition_prediction import ConditionPredictionModule
-from .filter_matrix import FilterModule
 from .gene_gradients import GeneGradientsModule
 from .parallel_conditions import ParallelConditionsModule
 from .pca import PCAModule
@@ -15,7 +14,6 @@ MODULE_REGISTRY = [
     UMAPModule(),
     ClusteringModule(),
     GeneGradientsModule(),
-    FilterModule(),
     ConditionPredictionModule(),
     ParallelConditionsModule(),
 ]

@@ -41,8 +41,7 @@ class ConditionPredictionModule:
                             "confusion matrix, and feature (gene) importances."
                         ),
                         html.Li(
-                            "Inspect which genes drive the decision tree / model "
-                            "and optionally export ranked gene scores for Celov."
+                            "Inspect which genes drive the decision tree / model."
                         ),
                     ],
                     className="mb-3",
