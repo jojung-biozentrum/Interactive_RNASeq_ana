@@ -24,6 +24,12 @@ import dash_bootstrap_components as dbc
 
 from src.GUI.auth import enable_basic_auth, load_basic_auth_users
 from src.GUI.components.dataset_picker import dataset_picker_layout
+from src.GUI.components.path_browser import (
+    folder_browser_modal,
+    is_within,
+    parse_roots,
+    register_folder_browser,
+)
 from src.GUI.data_store import load_selected, session_to_store
 from src.GUI.modules import MODULE_REGISTRY
 from src.GUI.project import DatasetEntry, open_project
@@ -63,11 +69,15 @@ def _project_blob(project) -> dict:
     }
 
 
-def _try_open_project(path: str | None) -> tuple[dict | None, str, list, str | None]:
+def _try_open_project(
+    path: str | None, roots: list[Path] | None = None
+) -> tuple[dict | None, str, list, str | None]:
     """Load an existing ``project.yaml`` (read-only). Never writes."""
     if not path or not str(path).strip():
         return None, "", [], None
     path = str(path).strip()
+    if roots and not is_within(path, roots):
+        return None, "Folder is outside the folders this server may read.", [], None
     try:
         project = open_project(path)
         blob = _project_blob(project)
@@ -82,6 +92,7 @@ def create_app(
     default_project: str | None = None,
     url_base_pathname: str | None = None,
     secret_config: str | None = None,
+    browse_roots: str | list[str] | None = None,
 ) -> Dash:
     dash_kwargs: dict = {
         "external_stylesheets": [dbc.themes.FLATLY],
@@ -102,7 +113,8 @@ def create_app(
         dbc.Tab(mod.layout(), label=mod.label, tab_id=mod.id) for mod in MODULE_REGISTRY
     ]
 
-    blob, status, opts, first = _try_open_project(default_project)
+    roots = parse_roots(browse_roots) or parse_roots([default_project, Path.home()])
+    blob, status, opts, first = _try_open_project(default_project, roots)
 
     app.layout = dbc.Container(
         [
@@ -134,7 +146,18 @@ def create_app(
                                     md=8,
                                 ),
                                 dbc.Col(
-                                    dbc.Button("Open", id="project-open", color="primary"),
+                                    [
+                                        dbc.Button(
+                                            "Browse…",
+                                            id="project-browse-open",
+                                            color="info",
+                                            outline=True,
+                                            className="me-2",
+                                        ),
+                                        dbc.Button(
+                                            "Open", id="project-open", color="primary"
+                                        ),
+                                    ],
                                     md=4,
                                 ),
                             ],
@@ -145,6 +168,7 @@ def create_app(
                             className="mt-2 text-muted small",
                             children=status,
                         ),
+                        folder_browser_modal("project-browse"),
                     ]
                 ),
                 className="mb-3",
@@ -159,14 +183,17 @@ def create_app(
         className="pb-5",
     )
 
-    _register_core_callbacks(app)
+    _register_core_callbacks(app, roots)
+    register_folder_browser(
+        app, "project-browse", roots=roots, target_id="project-path"
+    )
     for mod in MODULE_REGISTRY:
         mod.register_callbacks(app)
 
     return app
 
 
-def _register_core_callbacks(app: Dash) -> None:
+def _register_core_callbacks(app: Dash, roots: list[Path]) -> None:
     @app.callback(
         Output("project-store", "data"),
         Output("project-status", "children"),
@@ -177,7 +204,7 @@ def _register_core_callbacks(app: Dash) -> None:
         prevent_initial_call=True,
     )
     def _open_project(n_open, path):
-        blob, msg, opts, first = _try_open_project(path)
+        blob, msg, opts, first = _try_open_project(path, roots)
         if blob is None and not (path and str(path).strip()):
             return None, "Enter a working folder path.", [], None
         return blob, msg, opts, first
@@ -238,12 +265,18 @@ def main(argv: list[str] | None = None) -> None:
         default=None,
         help="TOML with [auth] user / pwd (omit for no login, e.g. local use)",
     )
+    parser.add_argument(
+        "--browse-roots",
+        default=None,
+        help="Folders the Browse dialog may list, separated by ':'",
+    )
     args = parser.parse_args(argv)
 
     app = create_app(
         default_project=args.project,
         url_base_pathname=args.url_base_pathname,
         secret_config=args.secret_config,
+        browse_roots=args.browse_roots,
     )
     app.run(host=args.host, port=args.port, debug=args.debug)
 

@@ -7,9 +7,12 @@ Bronto (`/home/lab/data`) is mounted read-only. This branch therefore:
 
 - never writes `project.yaml`
 - has no dataset register / unregister
-- has no native (tkinter) file dialogs
 - has no Filter matrix tab
 - has no Celov / CSV / other file exports
+
+**Browse** is a Dash modal rendered in the user's browser. The old native
+(tkinter) dialogs are gone: those opened a window on the *server*, which is
+useless remotely and crashes on a headless VM (`Can't find a usable init.tcl`).
 
 Plotly camera-download (PNG/SVG from the figure toolbar) stays: that is
 browser-side, not a write on the server.
@@ -63,6 +66,11 @@ Environment:
 | `DASH_URL_BASE_PATHNAME` | Must match the nginx location (`/interactive/`) |
 | `DASH_DEFAULT_PROJECT` | Folder that already contains `project.yaml` |
 | `DASH_SECRET_CONFIG` | TOML with `[auth] user` / `pwd`. Omit to run **without** a login. |
+| `DASH_BROWSE_ROOTS` | `:`-separated folders the Browse modal may list, and the only folders that can be opened. Defaults to `DASH_DEFAULT_PROJECT` plus `$HOME`. |
+
+Keep `DASH_BROWSE_ROOTS` as narrow as possible: it is the read scope the web UI
+exposes. Paths outside it are neither listed nor openable, including forged
+requests and `..` traversal.
 
 If `DASH_SECRET_CONFIG` is set, the file must exist or gunicorn will fail to start.
 You can reuse `~/www/dashboard/.secret-rna-seq-viewer.toml` (same keys as the
@@ -85,4 +93,6 @@ as `/genes`). Leave the variable unset only for local testing.
 python -m src.GUI.app --project /path/to/folder --url-base-pathname /interactive/
 # optional login:
 python -m src.GUI.app --project /path/to/folder --secret-config /path/to/.secret-rna-seq-viewer.toml
+# limit what Browse may list:
+python -m src.GUI.app --browse-roots /home/lab/data:/home/lab/www/dashboard
 ```

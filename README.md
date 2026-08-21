@@ -25,8 +25,11 @@ It does not write `project.yaml`, register datasets, filter matrices, or
 export Celov / CSV files (Bronto is mounted read-only on the lab VM).
 See [deploy/README.md](deploy/README.md) for systemd + nginx.
 
-Open a **working project folder** that already contains `project.yaml`.
-The app never writes that file.
+Open a **working project folder** that already contains `project.yaml`
+(type the path, or pick it with **Browse…**). The app never writes that file.
+
+**Browse…** opens a folder list *in the browser*, not a dialog on the machine
+running the server. It is limited to `--browse-roots` / `DASH_BROWSE_ROOTS`.
 
 ### Recommended project folder layout
 

@@ -11,6 +11,7 @@ Environment=PYTHONPATH=/home/lab/Interactive_RNASeq_ana
 Environment=DASH_URL_BASE_PATHNAME=/interactive/
 Environment=DASH_DEFAULT_PROJECT=/home/lab/www/dashboard/interactive-project
 Environment=DASH_SECRET_CONFIG=/home/lab/www/dashboard/.secret-rna-seq-viewer.toml
+Environment=DASH_BROWSE_ROOTS=/home/lab/data:/home/lab/www/dashboard/interactive-project
 ExecStart=/home/lab/anaconda3/envs/plotly/bin/gunicorn --log-level=debug --timeout 900 --workers 2 src.GUI.wsgi:server -b :8052
 
 [Install]
