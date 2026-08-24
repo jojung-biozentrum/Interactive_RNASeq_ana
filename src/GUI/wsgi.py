@@ -6,7 +6,7 @@ Environment:
 
     DASH_URL_BASE_PATHNAME   nginx location, default ``/interactive/``
     DASH_DEFAULT_PROJECT     override the fixed data folder (see app.DATA_ROOT)
-    DASH_SECRET_CONFIG       TOML with [auth] user / pwd; omit to skip login
+    DASH_SECRET_CONFIG       TOML with [auth] user / pwd; required
 """
 
 from __future__ import annotations
@@ -26,6 +26,6 @@ app = create_app(
     url_base_pathname=normalize_url_base_pathname(
         os.environ.get("DASH_URL_BASE_PATHNAME", "/interactive/")
     ),
-    secret_config=os.environ.get("DASH_SECRET_CONFIG") or None,
+    secret_config=os.environ.get("DASH_SECRET_CONFIG", ""),
 )
 server = app.server

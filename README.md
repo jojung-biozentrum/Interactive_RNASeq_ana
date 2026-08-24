@@ -136,9 +136,13 @@ pip install -r requirements.txt
 ### Run
 
 ```bash
-python -m src.GUI.app                                  # uses DATA_ROOT
-python -m src.GUI.app --project path/to/your/project    # local override
+python -m src.GUI.app --secret-config path/to/.secret-rna-seq-ana.toml
+# same, but reading another folder than DATA_ROOT:
+python -m src.GUI.app --secret-config path/to/.secret-rna-seq-ana.toml --project path/to/your/project
 ```
 
-Omit `--secret-config` for no login. On the VM, gunicorn sets
-`DASH_SECRET_CONFIG` (see [deploy/README.md](deploy/README.md)).
+`--secret-config` is required — the viewer always asks for a login. It points at
+a TOML with `[auth] user` / `pwd`; see
+[deploy/secret-rna-seq-ana.toml.example](deploy/secret-rna-seq-ana.toml.example).
+On the VM, gunicorn passes `DASH_SECRET_CONFIG` instead
+(see [deploy/README.md](deploy/README.md)).

@@ -91,8 +91,12 @@ def create_app(
     app = Dash(__name__, **dash_kwargs)
 
     secret = (secret_config or "").strip()
-    if secret:
-        enable_basic_auth(app, load_basic_auth_users(secret))
+    if not secret:
+        raise ValueError(
+            "A login is mandatory: point --secret-config (or DASH_SECRET_CONFIG) "
+            "at a TOML with [auth] user / pwd."
+        )
+    enable_basic_auth(app, load_basic_auth_users(secret))
 
     module_tabs = [
         dbc.Tab(mod.layout(), label=mod.label, tab_id=mod.id) for mod in MODULE_REGISTRY
@@ -191,8 +195,8 @@ def main(argv: list[str] | None = None) -> None:
     )
     parser.add_argument(
         "--secret-config",
-        default=None,
-        help="TOML with [auth] user / pwd (omit for no login, e.g. local use)",
+        required=True,
+        help="TOML with [auth] user / pwd; required, the viewer always asks for a login",
     )
     args = parser.parse_args(argv)
 

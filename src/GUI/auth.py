@@ -36,7 +36,7 @@ def load_basic_auth_users(path: str | Path) -> dict[str, str]:
 
     if not users:
         raise ValueError(
-            f"{path}: expected [auth] user and pwd (same as .secret-rna-seq-viewer.toml)."
+            f"{path}: expected [auth] user and pwd."
         )
     return users
 
