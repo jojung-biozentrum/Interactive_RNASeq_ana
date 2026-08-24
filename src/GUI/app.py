@@ -22,7 +22,7 @@ if str(_REPO_ROOT) not in sys.path:
 from dash import Dash, Input, Output, dcc, html
 import dash_bootstrap_components as dbc
 
-from src.GUI.auth import enable_basic_auth, load_basic_auth_users
+from src.GUI.auth import enable_basic_auth, load_basic_auth_users, load_secret_key
 from src.GUI.components.dataset_picker import dataset_picker_layout
 from src.GUI.data_store import load_selected, session_to_store
 from src.GUI.modules import MODULE_REGISTRY
@@ -96,7 +96,7 @@ def create_app(
             "A login is mandatory: point --secret-config (or DASH_SECRET_CONFIG) "
             "at a TOML with [auth] user / pwd."
         )
-    enable_basic_auth(app, load_basic_auth_users(secret))
+    enable_basic_auth(app, load_basic_auth_users(secret), load_secret_key(secret))
 
     module_tabs = [
         dbc.Tab(mod.layout(), label=mod.label, tab_id=mod.id) for mod in MODULE_REGISTRY

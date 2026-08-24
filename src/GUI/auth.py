@@ -1,7 +1,8 @@
-"""Optional HTTP Basic Auth from a secret TOML (same idea as rna-seq-viewer)."""
+"""HTTP Basic Auth from a secret TOML (same idea as rna-seq-viewer)."""
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from typing import Mapping
 
@@ -41,8 +42,26 @@ def load_basic_auth_users(path: str | Path) -> dict[str, str]:
     return users
 
 
-def enable_basic_auth(app, users: Mapping[str, str]) -> None:
+def load_secret_key(path: str | Path) -> str:
+    """Key signing the Flask session dash_auth stores the user in.
+
+    ``[auth] secret_key`` when set, else derived from the secret file itself:
+    that is stable across gunicorn workers and restarts without asking for
+    another setting, and changes when the credentials do.
+    """
+    path = Path(path).expanduser()
+    raw = _load_toml(path)
+    auth = raw.get("auth") if isinstance(raw.get("auth"), dict) else {}
+    key = auth.get("secret_key")
+    if key:
+        return str(key)
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def enable_basic_auth(
+    app, users: Mapping[str, str], secret_key: str | None = None
+) -> None:
     """Wrap a Dash app with dash_auth.BasicAuth."""
     import dash_auth
 
-    dash_auth.BasicAuth(app, dict(users))
+    dash_auth.BasicAuth(app, dict(users), secret_key=secret_key)
