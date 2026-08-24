@@ -5,9 +5,8 @@
 Environment:
 
     DASH_URL_BASE_PATHNAME   nginx location, default ``/interactive/``
-    DASH_DEFAULT_PROJECT     folder that already contains ``project.yaml``
+    DASH_DEFAULT_PROJECT     override the fixed data folder (see app.DATA_ROOT)
     DASH_SECRET_CONFIG       TOML with [auth] user / pwd; omit to skip login
-    DASH_BROWSE_ROOTS        ``:``-separated folders the Browse dialog may list
 """
 
 from __future__ import annotations
@@ -28,6 +27,5 @@ app = create_app(
         os.environ.get("DASH_URL_BASE_PATHNAME", "/interactive/")
     ),
     secret_config=os.environ.get("DASH_SECRET_CONFIG") or None,
-    browse_roots=os.environ.get("DASH_BROWSE_ROOTS") or None,
 )
 server = app.server

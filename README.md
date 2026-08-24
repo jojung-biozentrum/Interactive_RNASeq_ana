@@ -25,25 +25,30 @@ It does not write `project.yaml`, register datasets, filter matrices, or
 export Celov / CSV files (Bronto is mounted read-only on the lab VM).
 See [deploy/README.md](deploy/README.md) for systemd + nginx.
 
-Open a **working project folder** that already contains `project.yaml`
-(type the path, or pick it with **Browse…**). The app never writes that file.
+### Data folder
 
-**Browse…** opens a folder list *in the browser*, not a dialog on the machine
-running the server. It is limited to `--browse-roots` / `DASH_BROWSE_ROOTS`.
-
-### Recommended project folder layout
+The viewer reads **one fixed folder**, set by `DATA_ROOT` in `src/GUI/app.py`:
 
 ```
-<project>/
+/home/lab/data/Johannes/biofilm-microenvironments1
+```
+
+There is no folder picker and no dataset registration in the UI: the folder and
+its datasets cannot be changed from the browser. Datasets must already be listed
+in that folder's `project.yaml`. `--project` overrides the folder for local runs.
+
+### Expected folder layout
+
+```
+<data root>/
   project.yaml                 # dataset registry (expression, metadata, locus paths)
   data/
     countMatrix/               # expression / count matrices
     sampleMetadata/            # sample metadata tables
     locusMapping/              # gene metadata (locusTag / BioCyc / Pathways)
-  figs/                        # optional local notes; this branch does not save figures to disk
 ```
 
-Register paths relative to `<project>/` when possible (e.g.
+Register paths relative to the data root when possible (e.g.
 `data/countMatrix/kdv1679_new_CLR.csv`).
 
 ### Expected table formats
@@ -74,16 +79,19 @@ Same aesthetic / split-by controls as PCA.
 
 ### Hierarchical clustering
 
+Samples are clustered; **genes are not clustered**.
+
 **Run**
-- Linkage: ward, average, complete, or single on the unscaled samples×genes matrix (and genes×samples for gene clustering).
+- Linkage: ward, average, complete, or single on the unscaled samples×genes matrix.
 
 **Cluster cut (samples)**
 - **Total number of clusters** (default 2) with **Apply** to color heatmaps / PCA / dendrogram at that cut.
 - Or find the first pure cluster for a metadata column/value and color clusters at that step.
 
 **Heatmap**
-- Tabs: samples × samples (euclidean distances), genes × genes, samples × genes (expression).
-- Cluster-colored dendrograms on axes; colorbar (“Pairwise distances” / “Expression”) + cluster legend.
+- Tabs: samples × samples (euclidean distances), samples × genes (expression).
+- Cluster-colored sample dendrograms; on samples × genes the gene axis keeps the
+  order from the count matrix (no gene dendrogram).
 - Click cells for sample metadata and/or locus-lookup gene annotation (when registered on the dataset).
 
 **PCA + dendrogram** (samples × samples tab)
@@ -113,25 +121,11 @@ Per-gene correlation of expression vs ordered metadata levels
 - Click genes on gradient/pairwise plots for expression-vs-level profiles
   (up to 6 per row, 6 rows). Click again to remove; Clear selected genes to reset.
 
-### Filter count matrix
+### Not on this branch
 
-Not included on this branch (would write a filtered matrix to disk).
-
-### Condition prediction *(placeholder)*
-
-Planned: supervised ML (decision tree / related methods) to predict metadata
-conditions from the transcriptome, with train/test metrics and gene importances.
-Tab is a stub for now — see the in-app description.
-
-### Parallel conditions *(placeholder)*
-
-Planned: subset + ordered gradient column → hierarchical clustering per gradient
-level → match closest clusters → find condition columns that best correlate with
-cluster differences, with significance vs the rest of the dataset.
-Tab is a stub for now — see the in-app description.
-
-### Gene enrichment *(placeholder)*
-Planned: pathway enrichment (this branch has no Celov file export).
+Filter count matrix, Celov / CSV export, dataset registration, and the
+Condition prediction / Parallel conditions / Gene enrichment placeholder tabs
+are all absent here. See `main` for the local desktop version.
 
 ### Install
 
@@ -142,11 +136,8 @@ pip install -r requirements.txt
 ### Run
 
 ```bash
-python -m src.GUI.app
-```
-or
-```bash
-python -m src.GUI.app --project path/to/your/project
+python -m src.GUI.app                                  # uses DATA_ROOT
+python -m src.GUI.app --project path/to/your/project    # local override
 ```
 
 Omit `--secret-config` for no login. On the VM, gunicorn sets

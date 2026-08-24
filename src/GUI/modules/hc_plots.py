@@ -645,35 +645,6 @@ def detail_from_heatmap_click(
             ],
             style=shared_vscroll,
         )
-    if which == "gg":
-        return html.Div(
-            [
-                dbc.Row(
-                    [
-                        dbc.Col(
-                            _scroll_x(
-                                [
-                                    html.H6("Row gene", className="mb-2"),
-                                    gene_detail_table(row_id, locus_lookup),
-                                ]
-                            ),
-                            md=6,
-                        ),
-                        dbc.Col(
-                            _scroll_x(
-                                [
-                                    html.H6("Column gene", className="mb-2"),
-                                    gene_detail_table(col_id, locus_lookup),
-                                ]
-                            ),
-                            md=6,
-                        ),
-                    ],
-                    className="g-2",
-                )
-            ],
-            style=shared_vscroll,
-        )
     return html.Div(
         [
             dbc.Row(

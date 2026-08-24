@@ -80,10 +80,8 @@ def _brace_clusters(cids: list[int]) -> str:
 def _heatmap_title(kind: str, dataset: str, t: int) -> dict:
     if kind == "ss":
         line1 = "Pairwise expression differences within samples"
-    elif kind == "gg":
-        line1 = "Pairwise expression differences within genes"
     else:
-        line1 = "Pairwise expression differences between samples and genes"
+        line1 = "Expression of genes per sample"
     return _plotly_title(
         line1,
         f"in {dataset} normalization ({t} clusters)",
@@ -277,9 +275,9 @@ def first_homogeneous_maxclust(
 
 
 def _run_hc(session: SessionData, *, method: str = "ward") -> dict:
-    """Cluster samples and genes on the unscaled count matrix (notebook).
+    """Cluster samples on the unscaled count matrix (notebook). Genes stay unclustered.
 
-    Linkage + PCA + distance matrices are computed once and stored; tab / cut
+    Linkage + PCA + distance matrix are computed once and stored; tab / cut
     changes only rebuild Plotly figures from this cache.
     """
     if session.expression is None or session.metadata is None:
@@ -291,9 +289,7 @@ def _run_hc(session: SessionData, *, method: str = "ward") -> dict:
     meta = session.metadata
 
     Z_samples = _linkage(X, method=method)
-    Z_genes = _linkage(X.T, method=method)
     dist_samples = squareform(pdist(X, metric="euclidean"))
-    dist_genes = squareform(pdist(X.T, metric="euclidean"))
 
     pca = PCA()
     pca.fit(X)
@@ -305,10 +301,8 @@ def _run_hc(session: SessionData, *, method: str = "ward") -> dict:
 
     return {
         "Z_samples": Z_samples,
-        "Z_genes": Z_genes,
         "X": X,
         "dist_samples": dist_samples,
-        "dist_genes": dist_genes,
         "sample_ids": sample_ids,
         "gene_ids": gene_ids,
         "score_df": score_df,
@@ -337,21 +331,6 @@ def _sample_distance_fig(rt: dict, sample_labels: np.ndarray, *, dataset: str, t
     )
 
 
-def _gene_distance_fig(rt: dict, *, dataset: str, t: int) -> go.Figure:
-    ids = rt["gene_ids"]
-    Z = rt["Z_genes"]
-    return heatmap_with_dendro(
-        rt["dist_genes"],
-        ids,
-        ids,
-        Z,
-        Z,
-        title=_heatmap_title("gg", dataset, t),
-        xaxis_title="Genes",
-        yaxis_title="Genes",
-    )
-
-
 def _sample_gene_fig(rt: dict, sample_labels: np.ndarray, *, dataset: str, t: int) -> go.Figure:
     Z = rt["Z_samples"]
     _, leaf_c = _leaf_clusters_in_dendro_order(Z, sample_labels)
@@ -360,7 +339,7 @@ def _sample_gene_fig(rt: dict, sample_labels: np.ndarray, *, dataset: str, t: in
         rt["sample_ids"],
         rt["gene_ids"],
         Z,
-        rt["Z_genes"],
+        None,
         title=_heatmap_title("sg", dataset, t),
         colorbar_title="Expression",
         row_leaf_clusters=leaf_c,
@@ -479,7 +458,6 @@ class ClusteringModule:
                     value="ss",
                     children=[
                         dcc.Tab(label="Samples × samples", value="ss"),
-                        dcc.Tab(label="Genes × genes", value="gg"),
                         dcc.Tab(label="Samples × genes", value="sg"),
                     ],
                 ),
@@ -930,9 +908,7 @@ class ClusteringModule:
                 n = rt["n_samples"]
                 t = max(2, min(int(t or 2), n))
                 labels = _cut_clusters(rt["Z_samples"], t)
-                if tab == "gg":
-                    fig = _gene_distance_fig(rt, dataset=dataset, t=t)
-                elif tab == "sg":
+                if tab == "sg":
                     fig = _sample_gene_fig(rt, labels, dataset=dataset, t=t)
                 else:
                     fig = _sample_distance_fig(rt, labels, dataset=dataset, t=t)

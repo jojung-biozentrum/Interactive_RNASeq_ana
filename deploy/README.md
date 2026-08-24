@@ -6,31 +6,31 @@ Read-only Dash viewer for the lab VM behind nginx, same pattern as
 Bronto (`/home/lab/data`) is mounted read-only. This branch therefore:
 
 - never writes `project.yaml`
-- has no dataset register / unregister
+- has no dataset register / unregister and no folder picker
 - has no Filter matrix tab
 - has no Celov / CSV / other file exports
-
-**Browse** is a Dash modal rendered in the user's browser. The old native
-(tkinter) dialogs are gone: those opened a window on the *server*, which is
-useless remotely and crashes on a headless VM (`Can't find a usable init.tcl`).
+- has no native (tkinter) dialogs: those opened a window on the *server*, which
+  is useless remotely and crashes on a headless VM (`Can't find a usable init.tcl`)
 
 Plotly camera-download (PNG/SVG from the figure toolbar) stays: that is
 browser-side, not a write on the server.
 
-## 1. Prepare a project folder (writable disk)
+## 1. The data folder
 
-Do **not** put `project.yaml` on Bronto if you still need to edit it.
-Example:
+The viewer reads exactly one folder, `DATA_ROOT` in `src/GUI/app.py`:
 
 ```
-/home/lab/www/dashboard/interactive-project/
+/home/lab/data/Johannes/biofilm-microenvironments1
   project.yaml
 ```
 
-Point dataset paths at Bronto with **absolute** paths, e.g.
-`/home/lab/data/.../countMatrix/....csv`.
+Nothing else is readable through the web UI. `project.yaml` must already exist
+there — the app will not create it — and its dataset paths may be relative to
+that folder or absolute.
 
-`project.yaml` must already exist; the app will not create it.
+Since Bronto is read-only, edit `project.yaml` from a machine that has write
+access to it (or set `DASH_DEFAULT_PROJECT` to a writable copy that points at
+Bronto with absolute paths).
 
 ## 2. Install
 
@@ -66,11 +66,7 @@ Environment:
 | `DASH_URL_BASE_PATHNAME` | Must match the nginx location (`/interactive/`) |
 | `DASH_DEFAULT_PROJECT` | Folder that already contains `project.yaml` |
 | `DASH_SECRET_CONFIG` | TOML with `[auth] user` / `pwd`. Omit to run **without** a login. |
-| `DASH_BROWSE_ROOTS` | `:`-separated folders the Browse modal may list, and the only folders that can be opened. Defaults to `DASH_DEFAULT_PROJECT` plus `$HOME`. |
-
-Keep `DASH_BROWSE_ROOTS` as narrow as possible: it is the read scope the web UI
-exposes. Paths outside it are neither listed nor openable, including forged
-requests and `..` traversal.
+| `DASH_DEFAULT_PROJECT` | Optional override of the fixed `DATA_ROOT`. |
 
 If `DASH_SECRET_CONFIG` is set, the file must exist or gunicorn will fail to start.
 You can reuse `~/www/dashboard/.secret-rna-seq-viewer.toml` (same keys as the
@@ -93,6 +89,4 @@ as `/genes`). Leave the variable unset only for local testing.
 python -m src.GUI.app --project /path/to/folder --url-base-pathname /interactive/
 # optional login:
 python -m src.GUI.app --project /path/to/folder --secret-config /path/to/.secret-rna-seq-viewer.toml
-# limit what Browse may list:
-python -m src.GUI.app --browse-roots /home/lab/data:/home/lab/www/dashboard
 ```

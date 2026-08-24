@@ -1,9 +1,8 @@
-"""Dataset picker (read-only: datasets come from project.yaml)."""
+"""Dataset picker (read-only: datasets come from the data folder's project.yaml)."""
 
 from __future__ import annotations
 
 from dash import dcc, html
-import dash_bootstrap_components as dbc
 
 
 def dataset_picker_layout(
@@ -12,13 +11,11 @@ def dataset_picker_layout(
 ) -> html.Div:
     return html.Div(
         [
-            html.H5("Datasets"),
+            html.H5("Dataset"),
             html.P(
-                "Datasets are listed from project.yaml. This server build cannot "
-                "register, unregister, or write filtered / Celov files.",
+                "Datasets are the ones registered in the data folder's project.yaml.",
                 className="text-muted small",
             ),
-            html.Label("Active dataset"),
             dcc.Dropdown(
                 id="ds-active",
                 multi=False,
