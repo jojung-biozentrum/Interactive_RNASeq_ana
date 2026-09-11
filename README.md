@@ -145,7 +145,9 @@ pip install -r requirements.txt
 ```bash
 python -m src.GUI.app
 ```
-or
+
+The working-folder field pre-fills with `/mnt/bronto/Johannes`. Override with:
+
 ```bash
 python -m src.GUI.app --project path/to/your/project
 ```

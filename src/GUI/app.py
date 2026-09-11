@@ -2,7 +2,7 @@
 
 Launch from repo root:
     python -m src.GUI.app
-    python -m src.GUI.app --project path/to/biofilm-microenvironments1
+    python -m src.GUI.app --project path/to/other/folder
 """
 
 from __future__ import annotations
@@ -28,6 +28,9 @@ from src.GUI.components.folder_browser import (
 from src.GUI.data_store import load_selected, session_to_store
 from src.GUI.modules import MODULE_REGISTRY
 from src.GUI.project import DatasetEntry, open_project
+
+# Pre-filled working folder in the UI and ``--project`` default.
+DEFAULT_PROJECT = "/mnt/bronto/Johannes"
 
 
 def _ds_opts(datasets: list) -> list[dict]:
@@ -78,7 +81,7 @@ def create_app(default_project: str | None = None) -> Dash:
                                     dbc.Input(
                                         id="project-path",
                                         type="text",
-                                        value=default_project or "",
+                                        value=default_project if default_project is not None else DEFAULT_PROJECT,
                                     ),
                                     md=6,
                                 ),
@@ -415,8 +418,8 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Biofilm RNA-Seq interactive viewer")
     parser.add_argument(
         "--project",
-        default=None,
-        help="Optional working folder to pre-fill (e.g. biofilm-microenvironments1)",
+        default=DEFAULT_PROJECT,
+        help=f"Working folder to pre-fill (default: {DEFAULT_PROJECT})",
     )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8050)

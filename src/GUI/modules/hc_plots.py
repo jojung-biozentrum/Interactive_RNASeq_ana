@@ -269,6 +269,16 @@ def heatmap_with_dendro(
     fig.update_xaxes(visible=False, row=1, col=1)
     fig.update_yaxes(visible=False, row=1, col=1)
 
+    # Keep dendrogram leaf axes in lockstep with heatmap zoom/pan (Plotly subplot
+    # ids: col dendro=x2/y2, row dendro=x3/y3, heatmap=x4/y4). Distance axes stay
+    # independent. Remove this block to restore independent zoom.
+    if has_col:
+        fig.update_xaxes(matches="x4", row=1, col=2)
+        fig.update_yaxes(fixedrange=True, row=1, col=2)
+    if has_row:
+        fig.update_yaxes(matches="y4", row=2, col=1)
+        fig.update_xaxes(fixedrange=True, row=2, col=1)
+
     legend_clusters = row_leaf_clusters or col_leaf_clusters
     if legend_clusters:
         for cid in sorted(set(legend_clusters)):

@@ -63,18 +63,46 @@ SIZE_CONSTANTS = ["6", "8", "10", "12", "16", "20", "28"]
 _LEGEND_GREY = "#808080"
 _LEGEND_STD_SIZE = 10.0
 _QUALITATIVE = px.colors.qualitative.Plotly
+# Index 0 (circle) is reserved for missing/None and the unset default; column
+# categories map from index 1 onward so None ≠ first real entry.
 _SYMBOL_CYCLE = [
     "circle",
+    "triangle-up",
     "square",
     "diamond",
     "cross",
     "x",
-    "triangle-up",
     "triangle-down",
     "star",
     "hexagon",
     "pentagon",
 ]
+# scatter3d.marker.symbol only accepts this short list
+_SYMBOL_CYCLE_3D = [
+    "circle",
+    "square",
+    "diamond",
+    "cross",
+    "x",
+    "circle-open",
+    "square-open",
+    "diamond-open",
+]
+_SYMBOL_3D_ALLOWED = set(_SYMBOL_CYCLE_3D)
+_SYMBOL_TO_3D = {
+    "triangle-up": "diamond",
+    "triangle-down": "diamond-open",
+    "star": "cross",
+    "hexagon": "square",
+    "pentagon": "square-open",
+}
+
+_MISSING_LABEL = "None"
+_MISSING_COLOR = "#b0b0b0"
+_MISSING_SYMBOL = "circle"
+_DEFAULT_COLOR = _QUALITATIVE[0]
+_DEFAULT_SYMBOL = "circle"
+_DEFAULT_SIZE = 8.0
 
 # Inkscape-ready export canvas: compact square plot + legend strip outside
 EXPORT_PLOT = 420
@@ -407,8 +435,63 @@ def equal_xy_axes(fig: go.Figure, df: pd.DataFrame, x_col: str, y_col: str) -> g
     return fig
 
 
+def _is_missing(v) -> bool:
+    if v is None:
+        return True
+    try:
+        return bool(pd.isna(v))
+    except (TypeError, ValueError):
+        return False
+
+
+def _as_float(v) -> float | None:
+    """Parse ints/floats and scientific strings (``1e-3``, ``2.5E+4``); else None."""
+    if _is_missing(v) or isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float, np.integer, np.floating)):
+        f = float(v)
+        return None if np.isnan(f) else f
+    s = str(v).strip().replace(",", "")
+    if not s:
+        return None
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+def _series_all_numeric(series: pd.Series) -> bool:
+    """True when every non-missing value parses as a number (incl. sci notation)."""
+    if pd.api.types.is_bool_dtype(series):
+        return False
+    if pd.api.types.is_numeric_dtype(series) and not pd.api.types.is_bool_dtype(series):
+        return True
+    present = [v for v in series if not _is_missing(v)]
+    return bool(present) and all(_as_float(v) is not None for v in present)
+
+
 def _sorted_categories(series: pd.Series) -> list[str]:
-    return sorted(series.dropna().astype(str).unique())
+    """Unique labels; numeric / sci-notation values sort by magnitude, else as strings."""
+    items: list[tuple[str, float | None]] = []
+    seen: set[str] = set()
+    for v in series:
+        if _is_missing(v):
+            continue
+        label = str(v)
+        if label in seen:
+            continue
+        seen.add(label)
+        items.append((label, _as_float(v)))
+    if not items:
+        return []
+    if all(num is not None for _, num in items):
+        items.sort(key=lambda t: t[1])  # type: ignore[arg-type, return-value]
+        return [lab for lab, _ in items]
+    return sorted(lab for lab, _ in items)
+
+
+def _has_missing(series: pd.Series) -> bool:
+    return bool(series.isna().any())
 
 
 def _color_map(series: pd.Series) -> dict[str, str]:
@@ -417,15 +500,43 @@ def _color_map(series: pd.Series) -> dict[str, str]:
 
 
 def _shape_map(series: pd.Series) -> dict[str, str]:
+    """Map non-null categories to filled symbols; circle is reserved for None."""
     cats = _sorted_categories(series)
-    return {c: _SYMBOL_CYCLE[i % len(_SYMBOL_CYCLE)] for i, c in enumerate(cats)}
+    cycle = _SYMBOL_CYCLE[1:]  # skip circle
+    return {c: cycle[i % len(cycle)] for i, c in enumerate(cats)}
+
+
+def _shape_map_3d(series: pd.Series) -> dict[str, str]:
+    """Like ``_shape_map`` but only symbols Scatter3d accepts."""
+    cats = _sorted_categories(series)
+    cycle = _SYMBOL_CYCLE_3D[1:]  # skip circle
+    return {c: cycle[i % len(cycle)] for i, c in enumerate(cats)}
+
+
+def _coerce_symbol_3d(symbol: str | None) -> str:
+    if not symbol:
+        return _DEFAULT_SYMBOL
+    if symbol in _SYMBOL_3D_ALLOWED:
+        return symbol
+    return _SYMBOL_TO_3D.get(symbol, _DEFAULT_SYMBOL)
 
 
 def _size_map(series: pd.Series, default: float = 8.0) -> dict[str, float]:
     cats = _sorted_categories(series)
-    steps = [float(s) for s in SIZE_CONSTANTS]
     if not cats:
         return {}
+    if _series_all_numeric(series):
+        nums = [_as_float(c) for c in cats]
+        assert all(n is not None for n in nums)
+        vmin = min(nums)  # type: ignore[type-var]
+        vmax = max(nums)  # type: ignore[type-var]
+        if vmax > vmin:
+            return {
+                c: 4.0 + 16.0 * (float(n) - float(vmin)) / (float(vmax) - float(vmin))
+                for c, n in zip(cats, nums)
+            }
+        return {c: float(default) for c in cats}
+    steps = [float(s) for s in SIZE_CONSTANTS]
     if len(cats) == 1:
         return {cats[0]: steps[len(steps) // 2]}
     return {
@@ -434,16 +545,41 @@ def _size_map(series: pd.Series, default: float = 8.0) -> dict[str, float]:
     }
 
 
+def _point_colors(series: pd.Series) -> list[str]:
+    cmap = _color_map(series)
+    return [
+        _MISSING_COLOR if _is_missing(v) else cmap.get(str(v), _QUALITATIVE[0])
+        for v in series
+    ]
+
+
+def _point_symbols(series: pd.Series) -> list[str]:
+    smap = _shape_map(series)
+    fallback = _SYMBOL_CYCLE[1]
+    return [
+        _MISSING_SYMBOL if _is_missing(v) else smap.get(str(v), fallback)
+        for v in series
+    ]
+
+
 def _marker_sizes(series: pd.Series, default: float = 8.0) -> list[float]:
-    if pd.api.types.is_numeric_dtype(series):
-        vals = pd.to_numeric(series, errors="coerce").fillna(default)
-        vmin, vmax = float(vals.min()), float(vals.max())
+    fill = float(default)
+    if _series_all_numeric(series):
+        vals = pd.Series(
+            [_as_float(v) if not _is_missing(v) else float("nan") for v in series],
+            dtype=float,
+        )
+        vmin = float(vals.min()) if vals.notna().any() else fill
+        vmax = float(vals.max()) if vals.notna().any() else fill
         if vmax > vmin:
             scaled = 4.0 + 16.0 * (vals - vmin) / (vmax - vmin)
-            return scaled.tolist()
-        return [default] * len(series)
+            return [fill if _is_missing(v) else float(s) for v, s in zip(series, scaled)]
+        return [fill] * len(series)
     mapping = _size_map(series, default=default)
-    return [mapping.get(str(v), default) for v in series]
+    return [
+        float(default) if _is_missing(v) else mapping.get(str(v), default)
+        for v in series
+    ]
 
 
 def _legend_dummy(
@@ -496,8 +632,45 @@ def build_scatter(
     use_size_col = size_col if size_col in columns else None
 
     if z and z in plot_df.columns:
+        plot3 = plot_df.copy()
+        color_discrete_map = None
+        symbol_map = None
+        category_orders: dict = {}
+
+        if use_color_col:
+            raw = plot_df[use_color_col]
+            color_discrete_map = {
+                _MISSING_LABEL: _MISSING_COLOR,
+                **_color_map(raw),
+            }
+            cats = [_MISSING_LABEL] if _has_missing(raw) else []
+            cats += _sorted_categories(raw)
+            plot3[use_color_col] = [
+                _MISSING_LABEL if _is_missing(v) else str(v) for v in raw
+            ]
+            category_orders[use_color_col] = cats
+
+        if use_shape_col:
+            raw = plot_df[use_shape_col]
+            symbol_map = {
+                _MISSING_LABEL: _MISSING_SYMBOL,
+                **_shape_map_3d(raw),
+            }
+            cats = [_MISSING_LABEL] if _has_missing(raw) else []
+            cats += _sorted_categories(raw)
+            plot3[use_shape_col] = [
+                _MISSING_LABEL if _is_missing(v) else str(v) for v in raw
+            ]
+            category_orders[use_shape_col] = cats
+
+        if use_size_col and not pd.api.types.is_numeric_dtype(plot_df[use_size_col]):
+            raw = plot_df[use_size_col]
+            plot3[use_size_col] = [
+                _MISSING_LABEL if _is_missing(v) else str(v) for v in raw
+            ]
+
         common = dict(
-            data_frame=plot_df,
+            data_frame=plot3,
             x=x,
             y=y,
             z=z,
@@ -510,15 +683,27 @@ def build_scatter(
             custom_data=["_click_id"],
             title=title,
         )
+        if color_discrete_map is not None:
+            common["color_discrete_map"] = color_discrete_map
+        if symbol_map is not None:
+            common["symbol_map"] = symbol_map
+        if category_orders:
+            common["category_orders"] = category_orders
         fig = px.scatter_3d(**common)
         fig.update_traces(hovertemplate="%{hovertext}<extra></extra>")
         marker_updates: dict = {}
         if use_color_col is None and color_const:
             marker_updates["color"] = color_const
+        elif use_color_col is None and not color_const:
+            marker_updates["color"] = _DEFAULT_COLOR
         if use_shape_col is None and shape_const:
-            marker_updates["symbol"] = shape_const
+            marker_updates["symbol"] = _coerce_symbol_3d(shape_const)
+        elif use_shape_col is None and not shape_const:
+            marker_updates["symbol"] = _DEFAULT_SYMBOL
         if use_size_col is None and size_const is not None:
             marker_updates["size"] = float(size_const)
+        elif use_size_col is None and size_const is None:
+            marker_updates["size"] = _DEFAULT_SIZE
         if marker_updates:
             fig.update_traces(marker=marker_updates)
         apply_export_layout(fig, title_lines=1, legend=True)
@@ -526,27 +711,25 @@ def build_scatter(
 
     # --- 2D: one data trace + separate legend entries per aesthetic (seaborn-style) ---
     if use_color_col:
-        cmap = _color_map(plot_df[use_color_col])
-        point_colors = [cmap.get(str(v), _QUALITATIVE[0]) for v in plot_df[use_color_col]]
+        point_colors = _point_colors(plot_df[use_color_col])
     elif color_const:
         point_colors = color_const
     else:
-        point_colors = _QUALITATIVE[0]
+        point_colors = _DEFAULT_COLOR
 
     if use_shape_col:
-        smap = _shape_map(plot_df[use_shape_col])
-        point_symbols = [smap.get(str(v), "circle") for v in plot_df[use_shape_col]]
+        point_symbols = _point_symbols(plot_df[use_shape_col])
     elif shape_const:
         point_symbols = shape_const
     else:
-        point_symbols = "circle"
+        point_symbols = _DEFAULT_SYMBOL
 
     if use_size_col:
-        point_sizes = _marker_sizes(plot_df[use_size_col])
+        point_sizes = _marker_sizes(plot_df[use_size_col], default=_DEFAULT_SIZE)
     elif size_const is not None:
         point_sizes = float(size_const)
     else:
-        point_sizes = 8.0
+        point_sizes = _DEFAULT_SIZE
 
     hover_text = plot_df[hover_name].astype(str) if hover_name in plot_df.columns else plot_df["_click_id"].astype(str)
 
@@ -573,6 +756,19 @@ def build_scatter(
 
     if use_color_col:
         cmap = _color_map(plot_df[use_color_col])
+        first = True
+        if _has_missing(plot_df[use_color_col]):
+            _legend_dummy(
+                fig,
+                name=_MISSING_LABEL,
+                color=_MISSING_COLOR,
+                symbol="circle",
+                size=_LEGEND_STD_SIZE,
+                group="legend-color",
+                group_title=use_color_col,
+                first_in_group=True,
+            )
+            first = False
         for i, cat in enumerate(_sorted_categories(plot_df[use_color_col])):
             _legend_dummy(
                 fig,
@@ -582,7 +778,7 @@ def build_scatter(
                 size=_LEGEND_STD_SIZE,
                 group="legend-color",
                 group_title=use_color_col,
-                first_in_group=(i == 0),
+                first_in_group=first and i == 0,
             )
     elif color_const:
         _legend_dummy(
@@ -598,6 +794,19 @@ def build_scatter(
 
     if use_shape_col:
         smap = _shape_map(plot_df[use_shape_col])
+        first = True
+        if _has_missing(plot_df[use_shape_col]):
+            _legend_dummy(
+                fig,
+                name=_MISSING_LABEL,
+                color=_LEGEND_GREY,
+                symbol=_MISSING_SYMBOL,
+                size=_LEGEND_STD_SIZE,
+                group="legend-shape",
+                group_title=use_shape_col,
+                first_in_group=True,
+            )
+            first = False
         for i, cat in enumerate(_sorted_categories(plot_df[use_shape_col])):
             _legend_dummy(
                 fig,
@@ -607,7 +816,7 @@ def build_scatter(
                 size=_LEGEND_STD_SIZE,
                 group="legend-shape",
                 group_title=use_shape_col,
-                first_in_group=(i == 0),
+                first_in_group=first and i == 0,
             )
     elif shape_const:
         _legend_dummy(
@@ -623,6 +832,21 @@ def build_scatter(
 
     if use_size_col:
         szmap = _size_map(plot_df[use_size_col])
+        first = True
+        if _has_missing(plot_df[use_size_col]) and not pd.api.types.is_numeric_dtype(
+            plot_df[use_size_col]
+        ):
+            _legend_dummy(
+                fig,
+                name=_MISSING_LABEL,
+                color=_LEGEND_GREY,
+                symbol="circle",
+                size=_DEFAULT_SIZE,
+                group="legend-size",
+                group_title=use_size_col,
+                first_in_group=True,
+            )
+            first = False
         for i, cat in enumerate(_sorted_categories(plot_df[use_size_col])):
             _legend_dummy(
                 fig,
@@ -632,7 +856,7 @@ def build_scatter(
                 size=szmap[cat],
                 group="legend-size",
                 group_title=use_size_col,
-                first_in_group=(i == 0),
+                first_in_group=first and i == 0,
             )
     elif size_const is not None:
         _legend_dummy(
@@ -650,8 +874,8 @@ def build_scatter(
         _legend_dummy(
             fig,
             name=legend_name or "samples",
-            color=_QUALITATIVE[0],
-            symbol="circle",
+            color=_DEFAULT_COLOR,
+            symbol=_DEFAULT_SYMBOL,
             size=_LEGEND_STD_SIZE,
             group="legend-samples",
             group_title=None,

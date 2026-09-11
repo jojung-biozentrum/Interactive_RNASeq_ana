@@ -33,6 +33,7 @@ from ..components.sample_detail import (
     gene_detail_table,
     sample_detail_placeholder,
     sample_detail_table,
+    samples_detail_table,
 )
 from ..data_store import SessionData, session_from_store
 from .hc_plots import (
@@ -669,6 +670,24 @@ class ClusteringModule:
                                     html.Div(
                                         [
                                             html.H6("Sample metadata", className="mb-2"),
+                                            html.Label(
+                                                "Show metadata of",
+                                                className="small mb-0",
+                                            ),
+                                            dcc.Dropdown(
+                                                id="hc-pca-meta-src",
+                                                options=[
+                                                    {
+                                                        "label": "Off (click a point)",
+                                                        "value": "off",
+                                                    },
+                                                    {"label": "Bin A", "value": "a"},
+                                                    {"label": "Bin B", "value": "b"},
+                                                ],
+                                                value="off",
+                                                clearable=False,
+                                                className="mb-2",
+                                            ),
                                             html.Div(
                                                 id="hc-pca-detail",
                                                 children=sample_detail_placeholder(),
@@ -1241,30 +1260,66 @@ class ClusteringModule:
         @app.callback(
             Output("hc-pca-detail", "children"),
             Input("hc-pca", "clickData"),
+            Input("hc-pca-meta-src", "value"),
+            Input("hc-cluster-sel", "data"),
             Input("hc-cache", "data"),
             Input("hc-maxclust-applied", "data"),
         )
-        def _pca_detail(click, cache, t):
+        def _pca_detail(click, meta_src, selected, cache, t):
             triggered = callback_context.triggered_id
             if triggered == "hc-cache" or not cache or "score_df" not in _HC_RUNTIME:
                 return sample_detail_placeholder()
+            df = _HC_RUNTIME["score_df"]
+            n = _HC_RUNTIME["n_samples"]
+            t_use = max(2, min(int(t or 2), n))
+            labels = _cut_clusters(_HC_RUNTIME["Z_samples"], t_use)
+            sample_ids = _HC_RUNTIME["sample_ids"]
+            cluster_col = f"maxclust :{t_use}"
+
+            src = meta_src if meta_src in ("a", "b") else "off"
+            if src in ("a", "b"):
+                bins = _normalize_bin_sel(selected)
+                cids = set(bins[src])
+                if not cids:
+                    return html.P(
+                        f"Bin {src.upper()} is empty — assign clusters on the dendrogram.",
+                        className="text-muted small mb-0",
+                    )
+                keep = [
+                    sid
+                    for sid, lab in zip(sample_ids, labels)
+                    if int(lab) in cids
+                ]
+                if not keep:
+                    return html.P(
+                        f"No samples in Bin {src.upper()}.",
+                        className="text-muted small mb-0",
+                    )
+                sub = df.loc[[s for s in keep if s in df.index]]
+                extras = [
+                    int(labels[sample_ids.index(sid)]) if sid in sample_ids else None
+                    for sid in sub.index.astype(str)
+                ]
+                return samples_detail_table(
+                    sub,
+                    title=f"Bin {src.upper()}",
+                    subtitle=f"Length: {len(sub)} samples",
+                    extra_col=cluster_col,
+                    extra_values=extras,
+                )
+
             if not click:
                 return sample_detail_placeholder()
             point = click["points"][0]
             cid = point.get("customdata")
             if isinstance(cid, (list, tuple)):
                 cid = cid[0] if cid else None
-            df = _HC_RUNTIME["score_df"]
             if cid is None or str(cid) not in df.index:
                 return sample_detail_placeholder()
             sid = str(cid)
             extra = None
-            n = _HC_RUNTIME["n_samples"]
-            t_use = max(2, min(int(t or 2), n))
-            labels = _cut_clusters(_HC_RUNTIME["Z_samples"], t_use)
-            sample_ids = _HC_RUNTIME["sample_ids"]
             if sid in sample_ids:
-                extra = {f"maxclust :{t_use}": int(labels[sample_ids.index(sid)])}
+                extra = {cluster_col: int(labels[sample_ids.index(sid)])}
             return sample_detail_table(df.loc[sid], extra=extra)
 
         @app.callback(
