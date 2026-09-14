@@ -14,10 +14,10 @@ class AnalysisModule(Protocol):
     id: str
     label: str
 
-    def layout(self) -> Component:
-        """Return the tab body layout."""
+    def layout(self, *, readonly: bool = False) -> Component:
+        """Return the tab body layout (``readonly`` hides disk-write UI)."""
         ...
 
-    def register_callbacks(self, app: Dash) -> None:
-        """Register Dash callbacks for this module."""
+    def register_callbacks(self, app: Dash, *, readonly: bool = False) -> None:
+        """Register Dash callbacks (``readonly`` skips browse/save/export)."""
         ...

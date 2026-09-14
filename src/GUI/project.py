@@ -134,17 +134,17 @@ def create_project(root: str | Path, name: str | None = None) -> Project:
     return project
 
 
-def open_project(root: str | Path) -> Project:
-    """Load an existing project.yaml. Does not create or write files."""
+def open_project(root: str | Path, *, readonly: bool = False) -> Project:
     root = Path(root).resolve()
     if not root.exists():
         raise FileNotFoundError(f"Working folder not found: {root}")
     yaml_path = root / "project.yaml"
     if not yaml_path.exists():
-        raise FileNotFoundError(
-            f"No project.yaml in {root}. Prepare the dataset registry ahead of "
-            "time; this server build does not write project.yaml."
-        )
+        if readonly:
+            raise FileNotFoundError(
+                f"No project.yaml in {root} (read-only mode cannot create one)"
+            )
+        return create_project(root)
     return Project.load(root)
 
 

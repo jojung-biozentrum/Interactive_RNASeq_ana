@@ -252,7 +252,7 @@ class UMAPModule:
     id = "umap"
     label = "UMAP"
 
-    def layout(self):
+    def layout(self, *, readonly: bool = False):
         return html.Div(
             [
                 dbc.Row(
@@ -386,7 +386,7 @@ class UMAPModule:
             ]
         )
 
-    def register_callbacks(self, app: Dash) -> None:
+    def register_callbacks(self, app: Dash, *, readonly: bool = False) -> None:
         def _meta_columns(session_blob, cache) -> list[str]:
             cols = list((session_blob or {}).get("meta_columns", []))
             if cache and "scores" in cache:

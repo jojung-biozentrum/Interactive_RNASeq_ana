@@ -120,6 +120,70 @@ def sample_detail_table(
     )
 
 
+def samples_detail_table(
+    frame: pd.DataFrame | None,
+    *,
+    title: str | None = None,
+    subtitle: str | None = None,
+    extra_col: str | None = None,
+    extra_values: list | None = None,
+) -> html.Div:
+    """Wide metadata table for multiple samples (one row per sample)."""
+    if frame is None or not isinstance(frame, pd.DataFrame) or frame.empty:
+        return html.P("No samples in this selection.", className="text-muted small mb-0")
+    cols: list[str] = []
+    if "fileName" in frame.columns:
+        cols.append("fileName")
+    for c in frame.columns:
+        if c in cols or c in _internal_cols() or _is_coord_col(str(c)):
+            continue
+        cols.append(str(c))
+    header = [html.Th("sample", className="text-nowrap")]
+    if extra_col:
+        header.append(html.Th(str(extra_col), className="text-nowrap"))
+    header += [html.Th(c, className="text-nowrap") for c in cols]
+    body_rows = []
+    extras = list(extra_values) if extra_values is not None else [None] * len(frame)
+    for i, (sid, row) in enumerate(frame.iterrows()):
+        cells = [html.Td(str(sid), className="text-nowrap fw-bold")]
+        if extra_col:
+            ev = extras[i] if i < len(extras) else None
+            cells.append(
+                html.Td(
+                    "" if ev is None or (isinstance(ev, float) and pd.isna(ev)) else str(ev),
+                    className="text-nowrap",
+                )
+            )
+        for c in cols:
+            val = row.get(c)
+            text = "" if val is None or (isinstance(val, float) and pd.isna(val)) else str(val)
+            cells.append(html.Td(text, className="text-nowrap"))
+        body_rows.append(html.Tr(cells))
+    n = len(frame)
+    kids: list = [html.H6(title or f"{n} samples", className="mb-1")]
+    kids.append(
+        html.P(
+            subtitle if subtitle is not None else f"Length: {n} samples",
+            className="text-muted small mb-2",
+        )
+    )
+    kids.append(
+        dbc.Table(
+            [html.Thead(html.Tr(header)), html.Tbody(body_rows)],
+            bordered=True,
+            striped=True,
+            size="sm",
+            className="mb-0",
+            style={"whiteSpace": "nowrap"},
+        )
+    )
+    return html.Div(
+        kids,
+        className="overflow-auto",
+        style={"maxHeight": "560px", "overflowY": "auto", "overflowX": "auto"},
+    )
+
+
 def plot_with_sample_detail(
     graph_id: str,
     detail_id: str,

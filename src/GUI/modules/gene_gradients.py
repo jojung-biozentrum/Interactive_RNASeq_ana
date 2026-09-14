@@ -14,11 +14,20 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from scipy import stats
 
-from src.biocyc.celov_multiomics_post import load_locus_lookup
+from src.biocyc.celov_multiomics_post import (
+    annotate_gene_table,
+    celov_multiomics_file_generation,
+    load_locus_lookup,
+)
+from src.GUI.project import resolve_celov_id_col
+
+from ..components.folder_browser import pick_save_file_dialog
 from ..components.gene_meta_mark import (
     add_marked_gene_trace,
     entry_dropdown_options,
+    gene_hover_text,
     gene_mark_mask,
+    gene_meta_hover_map,
     genes_with_meta_entry,
     locus_mark_columns,
     mark_controls,
@@ -245,6 +254,7 @@ def gradient_scatter_fig(
     title: dict | str,
     mark_genes: set[str] | None = None,
     mark_label: str | None = None,
+    hover_map: dict[str, str] | None = None,
 ) -> go.Figure:
     """Notebook-style scatter: grey below threshold, black above (this measure only)."""
     y_col = _METHOD_COLS[focus]
@@ -270,7 +280,7 @@ def gradient_scatter_fig(
                 mode="markers",
                 marker=dict(size=size, color=color, opacity=alpha),
                 customdata=sub["geneID"].astype(str),
-                text=sub["geneID"].astype(str),
+                text=gene_hover_text(sub["geneID"], hover_map),
                 hovertemplate=(
                     "%{text}<br>dynamic range=%{x:.3g}<br>"
                     f"{_METHOD_LABELS[focus]}=%{{y:.3g}}<extra></extra>"
@@ -288,6 +298,7 @@ def gradient_scatter_fig(
         legend_name=mark_label or "marked",
         size=8,
         opacity=1.0,
+        hover_map=hover_map,
     )
 
     fig.add_hline(y=rho_thr, line=dict(dash="dash", color="#808080", width=0.8))
@@ -319,6 +330,7 @@ def pairwise_coeff_fig(
     *,
     mark_genes: set[str] | None = None,
     mark_label: str | None = None,
+    hover_map: dict[str, str] | None = None,
 ) -> go.Figure:
     """Scatter of two correlation coefficients against each other."""
     xa, ya = _METHOD_COLS[method_a], _METHOD_COLS[method_b]
@@ -337,7 +349,7 @@ def pairwise_coeff_fig(
                 mode="markers",
                 marker=dict(size=6, color=_COLOR_FAIL, opacity=0.45),
                 customdata=base["geneID"].astype(str),
-                text=base["geneID"].astype(str),
+                text=gene_hover_text(base["geneID"], hover_map),
                 hovertemplate=(
                     "%{text}<br>"
                     f"{_METHOD_LABELS[method_a]}=%{{x:.3g}}<br>"
@@ -355,6 +367,7 @@ def pairwise_coeff_fig(
         legend_name=mark_label or "marked",
         size=8,
         opacity=1.0,
+        hover_map=hover_map,
     )
     lim = float(
         np.nanmax(np.abs(np.concatenate([results[xa].to_numpy(), results[ya].to_numpy()])))
@@ -563,6 +576,66 @@ def gene_profile_grid_fig(
     return fig
 
 
+def save_gradient_celov(
+    results: pd.DataFrame,
+    score_col: str,
+    out_path: str | Path,
+    mode: str,
+    locus_lookup: pd.DataFrame | None = None,
+    id_column: str = "biocyc_id",
+) -> list[Path]:
+    """Celov export like distances.ipynb: score + dynamic_range (not inverted)."""
+    df = results.copy()
+    id_column = (id_column or "biocyc_id").strip() or "biocyc_id"
+    if locus_lookup is not None:
+        if id_column not in df.columns:
+            df = annotate_gene_table(df, locus_lookup)
+        if id_column not in df.columns:
+            raise ValueError(
+                f"Celov ID column {id_column!r} not in locus lookup "
+                f"(columns: {list(locus_lookup.columns)})."
+            )
+    elif id_column not in df.columns:
+        id_column = "geneID"
+
+    subsets = {
+        "up_and_down": df,
+        "up": df[df[score_col] > 0],
+        "down": df[df[score_col] < 0],
+    }
+    mode = (mode or "up_and_down").lower().replace(" ", "_")
+    if mode in ("combined", "both"):
+        mode = "up_and_down"
+    if mode == "all":
+        types = ["up_and_down", "up", "down"]
+    elif mode in subsets:
+        types = [mode]
+    else:
+        raise ValueError(f"Unknown Celov mode {mode!r}")
+
+    template = str(out_path)
+    if "{}" not in template:
+        p = Path(template)
+        template = str(p.with_name(f"{p.stem}_{{}}{p.suffix or '.txt'}"))
+
+    written: list[Path] = []
+    for kind in types:
+        subset = subsets[kind]
+        path = Path(template.format(kind))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        celov_multiomics_file_generation(
+            subset,
+            path,
+            score_col,
+            column2="dynamic_range" if "dynamic_range" in subset.columns else None,
+            column2_invert=False,
+            id_column=id_column,
+            dataset_label=f"gene_gradient_{score_col}_{kind}",
+        )
+        written.append(path)
+    return written
+
+
 def _thr_block(method: str) -> html.Div:
     return html.Div(
         [
@@ -619,14 +692,15 @@ class GeneGradientsModule:
     id = "gene-gradients"
     label = "Gene gradients"
 
-    def layout(self):
+    def layout(self, *, readonly: bool = False):
+        write_style = {"display": "none"} if readonly else None
         return html.Div(
             [
                 html.P(
                     "Correlate gene expression with ordered metadata levels "
                     "(distances.ipynb gradients; Pearson / Spearman + Kendall τ). "
                     "Subset samples, drag level order, then set per-plot thresholds after Run. "
-                    "Click genes on correlation / pairwise plots for profiles "
+                    "Click genes on correlation / pairwise plots for profiles (below Celov) "
                     "and locus-lookup metadata (beside pairwise plots).",
                     className="text-muted small",
                 ),
@@ -769,6 +843,71 @@ class GeneGradientsModule:
                     type="default",
                 ),
                 html.Hr(),
+                html.Div(
+                    [
+                    html.H6("Save Celov"),
+                    dbc.Row(
+                        [
+                            dbc.Col(
+                                [
+                                    html.Label("Score"),
+                                    dcc.Dropdown(
+                                        id="grad-celov-score",
+                                        options=[
+                                            {"label": "Pearson ρ", "value": "pearson_rho"},
+                                            {"label": "Spearman ρ", "value": "spearman_rho"},
+                                            {"label": "Kendall τ", "value": "kendall_tau"},
+                                        ],
+                                        value="pearson_rho",
+                                        clearable=False,
+                                    ),
+                                ],
+                                md=3,
+                            ),
+                            dbc.Col(
+                                [
+                                    html.Label("Genes"),
+                                    dcc.RadioItems(
+                                        id="grad-celov-mode",
+                                        options=[
+                                            {"label": "up & down", "value": "up_and_down"},
+                                            {"label": "up", "value": "up"},
+                                            {"label": "down", "value": "down"},
+                                            {"label": "all together", "value": "all"},
+                                        ],
+                                        value="up_and_down",
+                                        inline=True,
+                                    ),
+                                ],
+                                md=4,
+                            ),
+                            dbc.Col(
+                                [
+                                    html.Label("Output path ({} = type)"),
+                                    dbc.InputGroup(
+                                        [
+                                            dbc.Input(id="grad-celov-out", type="text"),
+                                            dbc.Button(
+                                                "Browse…",
+                                                id="grad-celov-browse",
+                                                color="info",
+                                                outline=True,
+                                            ),
+                                        ]
+                                    ),
+                                ],
+                                md=4,
+                            ),
+                        ],
+                        className="g-2 mb-2",
+                    ),
+                    dbc.Button("Save Celov", id="grad-celov-save", color="secondary", className="mb-2"),
+                    html.Div(id="grad-celov-status", className="text-muted small mb-2"),
+                    ],
+                    id="grad-celov-wrap",
+                    style=write_style,
+                ),
+                html.Hr(),
                 html.H6("Clicked gene profiles"),
                 html.P(
                     "Click a gene on any gradient or pairwise plot (click again to remove). "
@@ -792,7 +931,7 @@ class GeneGradientsModule:
             ]
         )
 
-    def register_callbacks(self, app: Dash) -> None:
+    def register_callbacks(self, app: Dash, *, readonly: bool = False) -> None:
         @app.callback(
             Output("grad-subset-col", "options"),
             Output("grad-order-col", "options"),
@@ -1093,9 +1232,20 @@ class GeneGradientsModule:
             Input("grad-mark-col", "value"),
             Input("grad-mark-entry", "value"),
             Input("grad-selected-genes", "data"),
+            Input("ds-gene-meta-cols", "value"),
         )
         def _replot(
-            cache, rho_p, dr_p, rho_s, dr_s, rho_k, dr_k, mark_col, mark_entry, selected_genes
+            cache,
+            rho_p,
+            dr_p,
+            rho_s,
+            dr_s,
+            rho_k,
+            dr_k,
+            mark_col,
+            mark_entry,
+            selected_genes,
+            gene_meta_cols,
         ):
             empty = go.Figure()
             results = _GRAD_RUNTIME.get("results")
@@ -1135,6 +1285,10 @@ class GeneGradientsModule:
                 mark_label = "selected"
             else:
                 mark_label = None
+            hover_map = gene_meta_hover_map(
+                _GRAD_RUNTIME.get("locus_lookup"),
+                list(gene_meta_cols or []),
+            )
 
             measure_figs = []
             for method in methods:
@@ -1152,6 +1306,7 @@ class GeneGradientsModule:
                         title=title,
                         mark_genes=mark_genes,
                         mark_label=mark_label,
+                        hover_map=hover_map,
                     )
                 )
 
@@ -1167,6 +1322,7 @@ class GeneGradientsModule:
                     b,
                     mark_genes=mark_genes,
                     mark_label=mark_label,
+                    hover_map=hover_map,
                 )
                 for a, b in pairs
             ]
@@ -1304,3 +1460,79 @@ class GeneGradientsModule:
                 rep_col=rep_col if isinstance(rep_col, str) else None,
                 results=results if isinstance(results, pd.DataFrame) else None,
             )
+
+        if readonly:
+            return
+
+        @app.callback(
+            Output("grad-celov-out", "value"),
+            Output("grad-celov-status", "children", allow_duplicate=True),
+            Input("grad-celov-browse", "n_clicks"),
+            State("grad-celov-out", "value"),
+            State("project-store", "data"),
+            prevent_initial_call=True,
+        )
+        def _browse_celov(n_clicks, current, project_blob):
+            initial = (project_blob or {}).get("root") or current
+            chosen = pick_save_file_dialog(
+                initial=initial,
+                title="Save gradient Celov (use {} for type)",
+                defaultextension=".txt",
+                initialfile="GeneGradient_{}.txt",
+            )
+            if not chosen:
+                return no_update, "Celov path browse cancelled."
+            p = Path(chosen)
+            if "{}" not in p.name:
+                chosen = str(p.with_name(f"{p.stem}_{{}}{p.suffix or '.txt'}"))
+            return chosen, f"Celov output template: {chosen}"
+
+        @app.callback(
+            Output("grad-celov-status", "children"),
+            Input("grad-celov-save", "n_clicks"),
+            State("grad-celov-out", "value"),
+            State("grad-celov-mode", "value"),
+            State("grad-celov-score", "value"),
+            State("session-store", "data"),
+            State("project-store", "data"),
+            prevent_initial_call=True,
+        )
+        def _save_celov(n_clicks, out_path, mode, score_col, session_blob, project_blob):
+            results = _GRAD_RUNTIME.get("results")
+            if results is None or not isinstance(results, pd.DataFrame) or results.empty:
+                return "Run gradients first."
+            if not out_path or not str(out_path).strip():
+                return "Choose an output .txt path (Browse)."
+            score_col = score_col or "pearson_rho"
+            if score_col not in results.columns:
+                return f"Score column {score_col!r} was not computed — re-run with that measure."
+            try:
+                active = (session_blob or {}).get("active_datasets") or []
+                name = active[0] if active else None
+                entry = next(
+                    (
+                        d
+                        for d in (project_blob or {}).get("datasets", [])
+                        if d.get("name") == name
+                    ),
+                    None,
+                )
+                lookup = None
+                locus = (entry or {}).get("locus_lookup") or ""
+                root = (project_blob or {}).get("root")
+                if locus:
+                    path = Path(locus)
+                    if root and not path.is_absolute():
+                        path = Path(root) / path
+                    lookup = load_locus_lookup(path)
+                paths = save_gradient_celov(
+                    results,
+                    score_col,
+                    str(out_path).strip(),
+                    mode=mode or "up_and_down",
+                    locus_lookup=lookup,
+                    id_column=resolve_celov_id_col(entry),
+                )
+                return "Saved Celov: " + ", ".join(str(p) for p in paths)
+            except Exception as exc:  # noqa: BLE001
+                return f"Celov save error: {exc}"
