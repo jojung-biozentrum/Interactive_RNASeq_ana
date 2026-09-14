@@ -24,6 +24,7 @@ from ..components.controls import (
 )
 from ..components.gene_meta_mark import (
     entry_dropdown_options,
+    gene_meta_hover_map,
     genes_with_meta_entry,
     locus_mark_columns,
     mark_controls,
@@ -595,6 +596,34 @@ class ClusteringModule:
                                         dcc.Dropdown(id="hc-pca-z", clearable=True),
                                     ],
                                     md=2,
+                                ),
+                                dbc.Col(
+                                    [
+                                        html.Label("Bin A alpha"),
+                                        dcc.Slider(
+                                            id="hc-pca-alpha-a",
+                                            min=0.05,
+                                            max=1.0,
+                                            step=0.05,
+                                            value=1.0,
+                                            marks={0.05: "0.05", 0.5: "0.5", 1.0: "1"},
+                                        ),
+                                    ],
+                                    md=3,
+                                ),
+                                dbc.Col(
+                                    [
+                                        html.Label("Bin B alpha"),
+                                        dcc.Slider(
+                                            id="hc-pca-alpha-b",
+                                            min=0.05,
+                                            max=1.0,
+                                            step=0.05,
+                                            value=1.0,
+                                            marks={0.05: "0.05", 0.5: "0.5", 1.0: "1"},
+                                        ),
+                                    ],
+                                    md=3,
                                 ),
                             ],
                             className="g-2 mb-2",
@@ -1184,6 +1213,8 @@ class ClusteringModule:
             Input("hc-pca-x", "value"),
             Input("hc-pca-y", "value"),
             Input("hc-pca-z", "value"),
+            Input("hc-pca-alpha-a", "value"),
+            Input("hc-pca-alpha-b", "value"),
             Input("hc-heatmap-tabs", "value"),
             Input("hc-cluster-sel", "data"),
             Input("hc-pca-fig-w", "value"),
@@ -1198,6 +1229,8 @@ class ClusteringModule:
             x_col,
             y_col,
             z_col,
+            alpha_a,
+            alpha_b,
             tab,
             selected,
             pca_w,
@@ -1236,6 +1269,8 @@ class ClusteringModule:
                     selected=sel,
                     bin_a=bins["a"],
                     bin_b=bins["b"],
+                    alpha_a=float(alpha_a if alpha_a is not None else 1.0),
+                    alpha_b=float(alpha_b if alpha_b is not None else 1.0),
                     title=pca_title,
                 )
                 dendro_fig = dendrogram_colored_fig(
@@ -1338,10 +1373,20 @@ class ClusteringModule:
             State("hc-volcano-fig-w", "value"),
             State("hc-volcano-fig-h", "value"),
             State("session-store", "data"),
+            State("ds-gene-meta-cols", "value"),
             prevent_initial_call=True,
         )
         def _run_volcano(
-            n_clicks, selected, t, padj_thr, fc_thr, center, fig_w, fig_h, session_blob
+            n_clicks,
+            selected,
+            t,
+            padj_thr,
+            fc_thr,
+            center,
+            fig_w,
+            fig_h,
+            session_blob,
+            gene_meta_cols,
         ):
             empty = go.Figure()
             hide = {"display": "none"}
@@ -1422,6 +1467,9 @@ class ClusteringModule:
                 neg_log10_padj_threshold=padj_thr,
                 fold_change_threshold=fc_thr,
                 xaxis_title=x_label,
+                hover_map=gene_meta_hover_map(
+                    rt.get("locus_lookup"), list(gene_meta_cols or [])
+                ),
             )
             fig = set_fig_size(
                 fig, fig_w, fig_h, default_width=640, default_height=520
@@ -1446,9 +1494,10 @@ class ClusteringModule:
             Input("hc-volcano-mark-entry", "value"),
             Input("hc-volcano-fig-w", "value"),
             Input("hc-volcano-fig-h", "value"),
+            Input("ds-gene-meta-cols", "value"),
             prevent_initial_call=True,
         )
-        def _replot_volcano_marks(mark_col, mark_entry, fig_w, fig_h):
+        def _replot_volcano_marks(mark_col, mark_entry, fig_w, fig_h, gene_meta_cols):
             results = _HC_RUNTIME.get("volcano_results")
             meta = _HC_RUNTIME.get("volcano_plot_meta")
             if results is None or not meta:
@@ -1465,6 +1514,9 @@ class ClusteringModule:
                 xaxis_title=meta["xaxis_title"],
                 mark_genes=mark_genes,
                 mark_label=mark_label,
+                hover_map=gene_meta_hover_map(
+                    _HC_RUNTIME.get("locus_lookup"), list(gene_meta_cols or [])
+                ),
             )
             return set_fig_size(
                 fig, fig_w, fig_h, default_width=640, default_height=520

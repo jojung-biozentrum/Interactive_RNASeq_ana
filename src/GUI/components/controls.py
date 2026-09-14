@@ -521,21 +521,51 @@ def _coerce_symbol_3d(symbol: str | None) -> str:
     return _SYMBOL_TO_3D.get(symbol, _DEFAULT_SYMBOL)
 
 
+_SIZE_MIN = 1.0
+_SIZE_MAX = 8.0
+_SIZE_N_DECILES = 20
+
+
+def _scale_sizes_numeric(vals: np.ndarray, *, default: float = 8.0) -> np.ndarray:
+    """Map numeric values to marker sizes via deciles (NaN → default).
+
+    Deciles are rank-based, so linear and fold-scale columns are handled the
+    same way: only order matters, not absolute spacing.
+    """
+    out = np.full(vals.shape, float(default), dtype=float)
+    finite_mask = np.isfinite(vals)
+    if not finite_mask.any():
+        return out
+    finite = vals[finite_mask]
+    if np.unique(finite).size < 2:
+        return out
+    # Average ranks → percentile in (0, 1]; bin into 10 deciles (0..9).
+    pct = pd.Series(finite).rank(method="average", pct=True).to_numpy()
+    decile = np.clip(np.floor(pct * _SIZE_N_DECILES).astype(int), 0, _SIZE_N_DECILES - 1)
+    scaled = _SIZE_MIN + (_SIZE_MAX - _SIZE_MIN) * decile / (_SIZE_N_DECILES - 1)
+    out[finite_mask] = scaled
+    return out
+
+
 def _size_map(series: pd.Series, default: float = 8.0) -> dict[str, float]:
     cats = _sorted_categories(series)
     if not cats:
         return {}
     if _series_all_numeric(series):
-        nums = [_as_float(c) for c in cats]
-        assert all(n is not None for n in nums)
-        vmin = min(nums)  # type: ignore[type-var]
-        vmax = max(nums)  # type: ignore[type-var]
-        if vmax > vmin:
-            return {
-                c: 4.0 + 16.0 * (float(n) - float(vmin)) / (float(vmax) - float(vmin))
-                for c, n in zip(cats, nums)
-            }
-        return {c: float(default) for c in cats}
+        # Deciles from the full series (not unique values alone).
+        vals = np.asarray(
+            [_as_float(v) if not _is_missing(v) else np.nan for v in series],
+            dtype=float,
+        )
+        scaled = _scale_sizes_numeric(vals, default=default)
+        out: dict[str, float] = {}
+        for v, s in zip(series, scaled):
+            if _is_missing(v):
+                continue
+            lab = str(v)
+            if lab not in out:
+                out[lab] = float(s)
+        return {c: out.get(c, float(default)) for c in cats}
     steps = [float(s) for s in SIZE_CONSTANTS]
     if len(cats) == 1:
         return {cats[0]: steps[len(steps) // 2]}
@@ -565,16 +595,12 @@ def _point_symbols(series: pd.Series) -> list[str]:
 def _marker_sizes(series: pd.Series, default: float = 8.0) -> list[float]:
     fill = float(default)
     if _series_all_numeric(series):
-        vals = pd.Series(
-            [_as_float(v) if not _is_missing(v) else float("nan") for v in series],
+        vals = np.asarray(
+            [_as_float(v) if not _is_missing(v) else np.nan for v in series],
             dtype=float,
         )
-        vmin = float(vals.min()) if vals.notna().any() else fill
-        vmax = float(vals.max()) if vals.notna().any() else fill
-        if vmax > vmin:
-            scaled = 4.0 + 16.0 * (vals - vmin) / (vmax - vmin)
-            return [fill if _is_missing(v) else float(s) for v, s in zip(series, scaled)]
-        return [fill] * len(series)
+        scaled = _scale_sizes_numeric(vals, default=fill)
+        return [fill if _is_missing(v) else float(s) for v, s in zip(series, scaled)]
     mapping = _size_map(series, default=default)
     return [
         float(default) if _is_missing(v) else mapping.get(str(v), default)

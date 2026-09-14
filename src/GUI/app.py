@@ -407,6 +407,44 @@ def _register_core_callbacks(app: Dash) -> None:
             msg = session.error or "Failed to load."
         return store, msg
 
+    @app.callback(
+        Output("ds-gene-meta-cols", "options"),
+        Output("ds-gene-meta-cols", "value"),
+        Input("ds-active", "value"),
+        Input("project-store", "data"),
+        State("ds-gene-meta-cols", "value"),
+    )
+    def _sync_gene_meta_cols(active, blob, current):
+        if not blob or not blob.get("root") or not active:
+            return [], None
+        name = active if isinstance(active, str) else (active[0] if active else None)
+        if not name:
+            return [], None
+        entry = next(
+            (d for d in blob.get("datasets", []) if d.get("name") == name),
+            None,
+        )
+        locus = (entry or {}).get("locus_lookup") or ""
+        if not locus:
+            return [], None
+        from pathlib import Path
+
+        from src.biocyc.celov_multiomics_post import load_locus_lookup
+        from src.GUI.project import Project
+
+        try:
+            project = Project.load(blob["root"])
+            path = project.resolve(locus)
+            if not Path(path).is_file():
+                return [], None
+            lookup = load_locus_lookup(path)
+            cols = [str(c) for c in lookup.columns]
+        except Exception:  # noqa: BLE001
+            return [], None
+        opts = [{"label": c, "value": c} for c in cols]
+        cur = [c for c in (current or []) if c in cols]
+        return opts, (cur or None)
+
 
 def no_update_triple(msg: str):
     from dash import no_update

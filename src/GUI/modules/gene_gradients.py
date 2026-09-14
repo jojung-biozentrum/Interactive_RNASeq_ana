@@ -25,7 +25,9 @@ from ..components.folder_browser import pick_save_file_dialog
 from ..components.gene_meta_mark import (
     add_marked_gene_trace,
     entry_dropdown_options,
+    gene_hover_text,
     gene_mark_mask,
+    gene_meta_hover_map,
     genes_with_meta_entry,
     locus_mark_columns,
     mark_controls,
@@ -252,6 +254,7 @@ def gradient_scatter_fig(
     title: dict | str,
     mark_genes: set[str] | None = None,
     mark_label: str | None = None,
+    hover_map: dict[str, str] | None = None,
 ) -> go.Figure:
     """Notebook-style scatter: grey below threshold, black above (this measure only)."""
     y_col = _METHOD_COLS[focus]
@@ -277,7 +280,7 @@ def gradient_scatter_fig(
                 mode="markers",
                 marker=dict(size=size, color=color, opacity=alpha),
                 customdata=sub["geneID"].astype(str),
-                text=sub["geneID"].astype(str),
+                text=gene_hover_text(sub["geneID"], hover_map),
                 hovertemplate=(
                     "%{text}<br>dynamic range=%{x:.3g}<br>"
                     f"{_METHOD_LABELS[focus]}=%{{y:.3g}}<extra></extra>"
@@ -295,6 +298,7 @@ def gradient_scatter_fig(
         legend_name=mark_label or "marked",
         size=8,
         opacity=1.0,
+        hover_map=hover_map,
     )
 
     fig.add_hline(y=rho_thr, line=dict(dash="dash", color="#808080", width=0.8))
@@ -326,6 +330,7 @@ def pairwise_coeff_fig(
     *,
     mark_genes: set[str] | None = None,
     mark_label: str | None = None,
+    hover_map: dict[str, str] | None = None,
 ) -> go.Figure:
     """Scatter of two correlation coefficients against each other."""
     xa, ya = _METHOD_COLS[method_a], _METHOD_COLS[method_b]
@@ -344,7 +349,7 @@ def pairwise_coeff_fig(
                 mode="markers",
                 marker=dict(size=6, color=_COLOR_FAIL, opacity=0.45),
                 customdata=base["geneID"].astype(str),
-                text=base["geneID"].astype(str),
+                text=gene_hover_text(base["geneID"], hover_map),
                 hovertemplate=(
                     "%{text}<br>"
                     f"{_METHOD_LABELS[method_a]}=%{{x:.3g}}<br>"
@@ -362,6 +367,7 @@ def pairwise_coeff_fig(
         legend_name=mark_label or "marked",
         size=8,
         opacity=1.0,
+        hover_map=hover_map,
     )
     lim = float(
         np.nanmax(np.abs(np.concatenate([results[xa].to_numpy(), results[ya].to_numpy()])))
@@ -1219,9 +1225,20 @@ class GeneGradientsModule:
             Input("grad-mark-col", "value"),
             Input("grad-mark-entry", "value"),
             Input("grad-selected-genes", "data"),
+            Input("ds-gene-meta-cols", "value"),
         )
         def _replot(
-            cache, rho_p, dr_p, rho_s, dr_s, rho_k, dr_k, mark_col, mark_entry, selected_genes
+            cache,
+            rho_p,
+            dr_p,
+            rho_s,
+            dr_s,
+            rho_k,
+            dr_k,
+            mark_col,
+            mark_entry,
+            selected_genes,
+            gene_meta_cols,
         ):
             empty = go.Figure()
             results = _GRAD_RUNTIME.get("results")
@@ -1261,6 +1278,10 @@ class GeneGradientsModule:
                 mark_label = "selected"
             else:
                 mark_label = None
+            hover_map = gene_meta_hover_map(
+                _GRAD_RUNTIME.get("locus_lookup"),
+                list(gene_meta_cols or []),
+            )
 
             measure_figs = []
             for method in methods:
@@ -1278,6 +1299,7 @@ class GeneGradientsModule:
                         title=title,
                         mark_genes=mark_genes,
                         mark_label=mark_label,
+                        hover_map=hover_map,
                     )
                 )
 
@@ -1293,6 +1315,7 @@ class GeneGradientsModule:
                     b,
                     mark_genes=mark_genes,
                     mark_label=mark_label,
+                    hover_map=hover_map,
                 )
                 for a, b in pairs
             ]

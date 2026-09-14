@@ -10,7 +10,11 @@ from plotly.subplots import make_subplots
 from scipy.cluster import hierarchy
 
 from ..components.controls import apply_export_layout, equal_xy_axes
-from ..components.gene_meta_mark import add_marked_gene_trace, gene_mark_mask
+from ..components.gene_meta_mark import (
+    add_marked_gene_trace,
+    gene_hover_text,
+    gene_mark_mask,
+)
 from ..components.sample_detail import (
     gene_detail_table,
     sample_detail_placeholder,
@@ -340,6 +344,8 @@ def pca_cluster_fig(
     selected: list[int] | None = None,
     bin_a: list[int] | None = None,
     bin_b: list[int] | None = None,
+    alpha_a: float = 1.0,
+    alpha_b: float = 1.0,
     title: str | dict | None = None,
 ) -> go.Figure:
     df = score_df.copy()
@@ -382,12 +388,15 @@ def pca_cluster_fig(
     set_a = {str(int(c)) for c in (bin_a or [])}
     set_b = {str(int(c)) for c in (bin_b or [])}
     sel = {str(int(c)) for c in (selected or [])} or (set_a | set_b)
+    opa_a = float(np.clip(alpha_a if alpha_a is not None else 1.0, 0.05, 1.0))
+    opa_b = float(np.clip(alpha_b if alpha_b is not None else 1.0, 0.05, 1.0))
     for tr in fig.data:
         name = str(tr.name) if tr.name is not None else ""
         if name in set_a:
             # Bin A → crosses
             tr.marker.symbol = "cross"
             tr.marker.size = 12
+            tr.marker.opacity = opa_a
             if hasattr(tr.marker, "line"):
                 tr.marker.line = dict(width=1.5, color="#111111")
             else:
@@ -396,6 +405,7 @@ def pca_cluster_fig(
             # Bin B → filled circles
             tr.marker.symbol = "circle"
             tr.marker.size = 12
+            tr.marker.opacity = opa_b
             if hasattr(tr.marker, "line"):
                 tr.marker.line = dict(width=1.5, color="#111111")
             else:
@@ -516,6 +526,7 @@ def volcano_fig_from_results(
     xaxis_title: str = "Mean expression difference between clusters",
     mark_genes: set[str] | None = None,
     mark_label: str | None = None,
+    hover_map: dict[str, str] | None = None,
 ) -> go.Figure:
     """Plotly volcano matching distances.ipynb scatter + threshold lines."""
     padj_thr = float(neg_log10_padj_threshold)
@@ -540,7 +551,7 @@ def volcano_fig_from_results(
                 marker=dict(size=6, color=color, opacity=alpha),
                 name=name,
                 customdata=sub["geneID"].astype(str),
-                text=sub["geneID"].astype(str),
+                text=gene_hover_text(sub["geneID"], hover_map),
                 hovertemplate="%{text}<br>fc=%{x:.3g}<br>-log10(padj)=%{y:.3g}<extra></extra>",
                 showlegend=False,
             )
@@ -554,6 +565,7 @@ def volcano_fig_from_results(
         legend_name=mark_label or "marked",
         size=8,
         opacity=1.0,
+        hover_map=hover_map,
     )
     fig.add_hline(y=padj_thr, line=dict(dash="dash", color="#808080", width=0.8))
     fig.add_vline(x=fc_thr, line=dict(dash="dash", color="#808080", width=0.8))

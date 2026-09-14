@@ -42,6 +42,58 @@ def locus_mark_columns(lookup: pd.DataFrame | None) -> list[str]:
     return [str(c) for c in lookup.columns]
 
 
+def gene_meta_hover_map(
+    lookup: pd.DataFrame | None,
+    columns: list[str] | None,
+) -> dict[str, str]:
+    """Map locusTag / geneID → ``<br>col: value`` lines for Plotly hover text."""
+    cols = [str(c) for c in (columns or []) if c]
+    if (
+        lookup is None
+        or not isinstance(lookup, pd.DataFrame)
+        or lookup.empty
+        or not cols
+    ):
+        return {}
+    use = [c for c in cols if c in lookup.columns]
+    if not use:
+        return {}
+    id_cols = [c for c in ("locusTag", "geneID") if c in lookup.columns]
+    if not id_cols:
+        return {}
+    out: dict[str, str] = {}
+    for _, row in lookup.iterrows():
+        lines: list[str] = []
+        for c in use:
+            val = row.get(c)
+            if val is None or (isinstance(val, float) and pd.isna(val)):
+                text = ""
+            else:
+                text = str(val)
+            lines.append(f"{c}: {text}")
+        block = "<br>" + "<br>".join(lines)
+        for id_col in id_cols:
+            gid = row.get(id_col)
+            if gid is None or (isinstance(gid, float) and pd.isna(gid)):
+                continue
+            key = str(gid).strip()
+            if key and key not in out:
+                out[key] = block
+    return out
+
+
+def gene_hover_text(
+    gene_ids: pd.Series,
+    hover_map: dict[str, str] | None,
+) -> list[str]:
+    """Gene ID plus optional locus-metadata lines for each point."""
+    hmap = hover_map or {}
+    out: list[str] = []
+    for gid in gene_ids.astype(str):
+        out.append(gid + hmap.get(gid, ""))
+    return out
+
+
 def locus_entry_values(lookup: pd.DataFrame | None, column: str | None) -> list[str]:
     if (
         lookup is None
@@ -112,6 +164,7 @@ def add_marked_gene_trace(
     legend_name: str = "marked",
     size: int = 8,
     opacity: float = 1.0,
+    hover_map: dict[str, str] | None = None,
 ) -> int:
     """Draw matching genes as solid red points (same style as threshold-pass black)."""
     if not gene_ids or x_col not in results.columns or y_col not in results.columns:
@@ -128,7 +181,7 @@ def add_marked_gene_trace(
             marker=dict(size=size, color=_COLOR_MARK, opacity=opacity),
             name=legend_name,
             customdata=sub["geneID"].astype(str),
-            text=sub["geneID"].astype(str),
+            text=gene_hover_text(sub["geneID"], hover_map),
             hovertemplate="%{text} (marked)<extra></extra>",
             showlegend=True,
         )
