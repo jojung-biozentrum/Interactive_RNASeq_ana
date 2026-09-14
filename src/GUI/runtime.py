@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from dash import Dash
 
 _CONFIG_KEY = "INTERACTIVE_RNASEQ_READONLY"
-_DEFAULT_DATA_ROOT = "/home/lab/data/Johannes/biofilm-microenvironments1"
+_DEFAULT_DATA_ROOT = "/home/lab/data/Johannes/biofilm-microenvironments2"
 
 
 @dataclass(frozen=True)

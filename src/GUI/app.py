@@ -113,69 +113,62 @@ def create_app(
 
     if mode.readonly:
         root = str(mode.data_root or DEFAULT_PROJECT)
-        blob, status, opts, first = _load_project_blob(root, readonly=True)
-        header = html.P(
-            "Read-only viewer: datasets come from the folder below and nothing "
-            "is written to disk.",
-            className="text-muted",
-        )
-        project_card = dbc.Card(
-            dbc.CardBody(
-                [
-                    html.H6("Data folder", className="mb-1"),
-                    html.Div(status, className="font-monospace small text-muted"),
-                    html.Div(id="project-status", style={"display": "none"}),
-                    dcc.Input(id="project-path", type="hidden", value=root),
-                ]
-            ),
-            className="mb-3",
-        )
+        blob, _status, opts, first = _load_project_blob(root, readonly=True)
+        # Hidden anchors so shared callbacks keep their component ids.
+        project_block: list = [
+            html.Div(id="project-status", style={"display": "none"}),
+            dcc.Input(id="project-path", type="hidden", value=root),
+        ]
         picker = dataset_picker_layout(readonly=True, options=opts, value=first)
         stores = [
             dcc.Store(id="project-store", data=blob),
             dcc.Store(id="session-store"),
         ]
     else:
-        header = html.P(
-            "Open a working folder, register datasets, then explore modular analyses.",
-            className="text-muted",
-        )
         prefill = mode.data_root if mode.data_root is not None else DEFAULT_PROJECT
-        project_card = dbc.Card(
-            dbc.CardBody(
-                [
-                    html.H5("Working folder"),
-                    dbc.Row(
-                        [
-                            dbc.Col(
-                                dbc.Input(
-                                    id="project-path",
-                                    type="text",
-                                    value=prefill,
-                                ),
-                                md=6,
-                            ),
-                            dbc.Col(
-                                [
-                                    dbc.Button(
-                                        "Browse…",
-                                        id="project-browse",
-                                        color="info",
-                                        outline=True,
-                                        className="me-2",
-                                    ),
-                                    dbc.Button("Open", id="project-open", color="primary"),
-                                ],
-                                md=6,
-                            ),
-                        ],
-                        className="g-2",
-                    ),
-                    html.Div(id="project-status", className="mt-2 text-muted small"),
-                ]
+        project_block = [
+            html.P(
+                "Open a working folder, register datasets, then explore modular analyses.",
+                className="text-muted",
             ),
-            className="mb-3",
-        )
+            dbc.Card(
+                dbc.CardBody(
+                    [
+                        html.H5("Working folder"),
+                        dbc.Row(
+                            [
+                                dbc.Col(
+                                    dbc.Input(
+                                        id="project-path",
+                                        type="text",
+                                        value=prefill,
+                                    ),
+                                    md=6,
+                                ),
+                                dbc.Col(
+                                    [
+                                        dbc.Button(
+                                            "Browse…",
+                                            id="project-browse",
+                                            color="info",
+                                            outline=True,
+                                            className="me-2",
+                                        ),
+                                        dbc.Button(
+                                            "Open", id="project-open", color="primary"
+                                        ),
+                                    ],
+                                    md=6,
+                                ),
+                            ],
+                            className="g-2",
+                        ),
+                        html.Div(id="project-status", className="mt-2 text-muted small"),
+                    ]
+                ),
+                className="mb-3",
+            ),
+        ]
         picker = dataset_picker_layout(readonly=False)
         stores = [dcc.Store(id="project-store"), dcc.Store(id="session-store")]
 
@@ -183,8 +176,7 @@ def create_app(
         [
             *stores,
             html.H2("Biofilm microenvironments — interactive viewer", className="mt-3 mb-1"),
-            header,
-            project_card,
+            *project_block,
             dbc.Card(dbc.CardBody(picker), className="mb-3"),
             dbc.Tabs(module_tabs, id="analysis-tabs", active_tab=active_tab),
         ],
