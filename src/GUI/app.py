@@ -43,6 +43,9 @@ from src.GUI.runtime import (
 # Prefill for --writable desktop runs. Readonly uses SERVER_DEFAULT_DATA_ROOT.
 DEFAULT_PROJECT = SERVER_DEFAULT_DATA_ROOT
 
+# Pre-filled working folder in the UI and ``--project`` default.
+DEFAULT_PROJECT = "/mnt/bronto/Johannes"
+
 
 def _ds_opts(datasets: list) -> list[dict]:
     names = []

@@ -165,6 +165,7 @@ def add_marked_gene_trace(
     size: int = 8,
     opacity: float = 1.0,
     hover_map: dict[str, str] | None = None,
+    showlegend: bool = True,
 ) -> int:
     """Draw matching genes as solid red points (same style as threshold-pass black)."""
     if not gene_ids or x_col not in results.columns or y_col not in results.columns:
@@ -183,10 +184,40 @@ def add_marked_gene_trace(
             customdata=sub["geneID"].astype(str),
             text=gene_hover_text(sub["geneID"], hover_map),
             hovertemplate="%{text} (marked)<extra></extra>",
-            showlegend=True,
+            showlegend=showlegend,
         )
     )
     return int(mask.sum())
+
+
+def mark_legend_banner(n_mark: int, mark_label: str | None) -> "html.Div | html.P":
+    """HTML stand-in for the Plotly mark legend (keeps figure size stable)."""
+    from dash import html
+
+    if not n_mark or not mark_label:
+        return html.P("", className="small mb-0", style={"minHeight": "1.25rem"})
+    return html.Div(
+        [
+            html.Span(
+                style={
+                    "display": "inline-block",
+                    "width": "10px",
+                    "height": "10px",
+                    "borderRadius": "50%",
+                    "backgroundColor": _COLOR_MARK,
+                    "marginRight": "8px",
+                    "verticalAlign": "middle",
+                }
+            ),
+            html.Span(
+                f"{mark_label}  ({n_mark} gene{'s' if n_mark != 1 else ''})",
+                className="small",
+                style={"verticalAlign": "middle"},
+            ),
+        ],
+        className="mb-1",
+        style={"minHeight": "1.25rem"},
+    )
 
 
 def mark_controls(
@@ -203,7 +234,10 @@ def mark_controls(
         [
             dbc.Col(
                 [
-                    html.Label("Mark genes by locus column", className="small mb-0"),
+                    html.Label(
+                        "Gene column (Name, biological process, …)",
+                        className="small mb-0",
+                    ),
                     dcc.Dropdown(
                         id=col_id,
                         clearable=True,
@@ -215,7 +249,7 @@ def mark_controls(
             ),
             dbc.Col(
                 [
-                    html.Label("Entry (; -separated tokens)", className="small mb-0"),
+                    html.Label("Entry", className="small mb-0"),
                     dcc.Dropdown(
                         id=entry_id,
                         clearable=True,
