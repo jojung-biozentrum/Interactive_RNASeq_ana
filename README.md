@@ -20,19 +20,18 @@ This interactive interface was created using the cursor agent. The single analys
 
 ## Interactive viewer
 
-One code tree serves **desktop** (writable) and **Virtual-server** (read-only)
-modes. Wanted server differences are flags (`DASH_READONLY`, fixed data root,
-basic auth, URL prefix) — not a fork of the analysis modules — so merges stay
-conflict-light.
+On the **`Virtual-server` branch the default is read-only** (safe for the lab
+VM). Accidental `python -m src.GUI.app` will **not** show Working folder /
+Register / Filter. Writable desktop UI needs an explicit `--writable` (or
+`DASH_WRITABLE=1`) and must not be used on the server.
 
-Open a **working project folder** (Browse → **Open**) in desktop mode. The app
-writes `project.yaml` under that folder when you open or register datasets; it
-does **not** scaffold data or figure subfolders.
+Gunicorn must use `src.GUI.wsgi:server`, which **forces** readonly (see
+[deploy/README.md](deploy/README.md)).
 
-In **read-only** mode (`--readonly` / `DASH_READONLY=1` / `src.GUI.wsgi`), the
-folder is fixed, dataset registration / Filter / Celov / CSV export UI is
-hidden, and nothing is written to disk. Analysis tabs (PCA, UMAP, clustering,
-gradients, placeholders) stay shared.
+In read-only mode the data folder is fixed
+(`…/biofilm-microenvironments2` or `DASH_DEFAULT_PROJECT`), auth is required,
+and Celov / CSV / register / Filter are hidden. Analysis tabs stay shared with
+`main`.
 
 ### Recommended project folder layout
 
@@ -152,21 +151,20 @@ pip install -r requirements.txt
 
 ### Run
 
-Desktop (writable):
+Read-only (default on this branch — auth required):
 
 ```bash
-python -m src.GUI.app
-python -m src.GUI.app --project path/to/your/project
+python -m src.GUI.app --secret-config path/to/secret.toml
+# or gunicorn (forced readonly):
+#   DASH_SECRET_CONFIG=... gunicorn src.GUI.wsgi:server -b :8052
 ```
 
-Read-only / lab VM (basic auth required):
+Writable desktop (explicit opt-in only; do not use on the lab VM):
 
 ```bash
-python -m src.GUI.app --readonly --secret-config path/to/secret.toml --project path/to/data
-# or gunicorn:
-#   DASH_SECRET_CONFIG=... DASH_DEFAULT_PROJECT=... gunicorn src.GUI.wsgi:server -b :8052
+python -m src.GUI.app --writable --project path/to/your/project
 ```
 
-Env knobs: `DASH_READONLY`, `DASH_DEFAULT_PROJECT` / `DASH_DATA_ROOT`,
-`DASH_URL_BASE_PATHNAME`, `DASH_SECRET_CONFIG`. Defaults live in
-`src/GUI/runtime.py` and `src/GUI/wsgi.py`.
+Env knobs: `DASH_READONLY`, `DASH_WRITABLE`, `DASH_DEFAULT_PROJECT` /
+`DASH_DATA_ROOT`, `DASH_URL_BASE_PATHNAME`, `DASH_SECRET_CONFIG`. See
+`src/GUI/runtime.py`, `src/GUI/wsgi.py`, and [deploy/README.md](deploy/README.md).

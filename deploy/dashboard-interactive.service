@@ -1,0 +1,21 @@
+[Unit]
+Description=Interactive RNA-seq viewer (read-only Dash app)
+After=network.target
+Requires=nginx.service
+
+[Service]
+User=lab
+Group=lab
+WorkingDirectory=/home/lab/Interactive_RNASeq_ana
+Environment=PYTHONPATH=/home/lab/Interactive_RNASeq_ana
+Environment=DASH_READONLY=1
+Environment=DASH_URL_BASE_PATHNAME=/interactive/
+# Fixed data folder (must already contain project.yaml). Overrides runtime default.
+Environment=DASH_DEFAULT_PROJECT=/home/lab/data/Johannes/biofilm-microenvironments2
+Environment=DASH_SECRET_CONFIG=/home/lab/www/dashboard/.secret-rna-seq-viewer.toml
+# MUST use wsgi — never python -m src.GUI.app without --writable on this host.
+ExecStart=/home/lab/anaconda3/envs/plotly/bin/gunicorn --log-level=debug --timeout 900 --workers 2 src.GUI.wsgi:server -b :8052
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

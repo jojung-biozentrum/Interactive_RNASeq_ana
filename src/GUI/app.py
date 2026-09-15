@@ -1,21 +1,23 @@
 """Dash entry point: desktop (writable) and Virtual-server (readonly) share one tree.
 
-Desktop::
+On this ``Virtual-server`` branch the **default is read-only** (safe for the lab
+VM). Accidental ``python -m src.GUI.app`` will not expose write UI.
 
-    python -m src.GUI.app
-    python -m src.GUI.app --project path/to/folder
+Read-only (default here / gunicorn)::
 
-Gunicorn (readonly)::
-
+    python -m src.GUI.app --secret-config path/to/secret.toml
     gunicorn src.GUI.wsgi:server -b :8052
 
-Wanted server differences are ``readonly`` / auth / URL prefix flags — not a
-fork of the analysis modules.
+Writable desktop (explicit opt-in only)::
+
+    python -m src.GUI.app --writable
+    DASH_WRITABLE=1 python -m src.GUI.app
 """
 
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -546,15 +548,24 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--project",
         default=None,
-        help=f"Working / data folder (default desktop: {DEFAULT_PROJECT})",
+        help=(
+            f"Data / working folder (readonly default: {SERVER_DEFAULT_DATA_ROOT}; "
+            f"writable default: {DEFAULT_PROJECT})"
+        ),
     )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8050)
     parser.add_argument("--debug", action="store_true")
-    parser.add_argument(
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
         "--readonly",
         action="store_true",
-        help="Virtual-server mode: fixed folder, no writes (also DASH_READONLY=1)",
+        help="Force read-only (default on Virtual-server; also DASH_READONLY=1)",
+    )
+    mode.add_argument(
+        "--writable",
+        action="store_true",
+        help="Allow register / Filter / Celov writes (desktop only; also DASH_WRITABLE=1)",
     )
     parser.add_argument(
         "--url-base-pathname",
@@ -564,15 +575,23 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--secret-config",
         default=None,
-        help="TOML with [auth] user / pwd (required with --readonly)",
+        help="TOML with [auth] user / pwd (required unless --writable)",
     )
     args = parser.parse_args(argv)
 
+    if args.writable:
+        readonly: bool | None = False
+    elif args.readonly:
+        readonly = True
+    else:
+        readonly = None  # → DEPLOYMENT_READONLY_DEFAULT (True on this branch)
+
+    secret = args.secret_config or os.environ.get("DASH_SECRET_CONFIG")
     app = create_app(
         default_project=args.project,
-        readonly=True if args.readonly else None,
+        readonly=readonly,
         url_base_pathname=args.url_base_pathname,
-        secret_config=args.secret_config,
+        secret_config=secret,
     )
     app.run(host=args.host, port=args.port, debug=args.debug)
 

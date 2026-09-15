@@ -1,7 +1,9 @@
 """Runtime mode shared by desktop and gunicorn/nginx deployments.
 
-Wanted Virtual-server differences live here as flags — not as a forked copy of
-analysis modules — so ``main`` and ``Virtual-server`` can share one code tree.
+On the ``Virtual-server`` branch the **safe default is read-only**. Writable
+desktop UI requires an explicit opt-in (``--writable`` / ``DASH_WRITABLE=1``).
+That way a mistaken ``python -m src.GUI.app`` on the lab VM cannot expose
+register / export / Filter.
 """
 
 from __future__ import annotations
@@ -16,12 +18,15 @@ _DEFAULT_DATA_ROOT = "/home/lab/data/Johannes/biofilm-microenvironments2"
 # Public alias for app.py / deploy (readonly fallback).
 SERVER_DEFAULT_DATA_ROOT = _DEFAULT_DATA_ROOT
 
+# Virtual-server branch: default to readonly. On ``main`` this should be False.
+DEPLOYMENT_READONLY_DEFAULT = True
+
 
 @dataclass(frozen=True)
 class AppMode:
     """How the Dash app is presented and which write paths are enabled."""
 
-    readonly: bool = False
+    readonly: bool = True
     data_root: str | None = None  # fixed folder when set (server / --project)
 
     @property
@@ -55,8 +60,25 @@ def mode_from_env(
     readonly: bool | None = None,
     default_project: str | None = None,
 ) -> AppMode:
-    """Resolve mode from explicit kwargs, then environment."""
-    ro = bool(readonly) if readonly is not None else env_flag("DASH_READONLY", False)
+    """Resolve mode from explicit kwargs, then environment.
+
+    Precedence for readonly:
+    1. Explicit ``readonly=`` kwarg (``True`` / ``False``)
+    2. ``DASH_WRITABLE=1`` → writable (escape hatch)
+    3. ``DASH_READONLY`` if set
+    4. ``DEPLOYMENT_READONLY_DEFAULT`` (True on Virtual-server)
+    """
+    if readonly is not None:
+        ro = bool(readonly)
+    elif env_flag("DASH_WRITABLE", False):
+        ro = False
+    elif os.environ.get("DASH_READONLY") is not None and str(
+        os.environ.get("DASH_READONLY")
+    ).strip() != "":
+        ro = env_flag("DASH_READONLY", True)
+    else:
+        ro = DEPLOYMENT_READONLY_DEFAULT
+
     root = default_project or os.environ.get("DASH_DEFAULT_PROJECT") or None
     if ro and not root:
         root = os.environ.get("DASH_DATA_ROOT") or _DEFAULT_DATA_ROOT
