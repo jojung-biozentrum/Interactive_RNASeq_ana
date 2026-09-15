@@ -28,6 +28,7 @@ from ..components.gene_meta_mark import (
     genes_with_meta_entry,
     locus_mark_columns,
     mark_controls,
+    mark_legend_banner,
 )
 from ..components.sample_detail import (
     gene_detail_placeholder,
@@ -165,7 +166,7 @@ def volcano_cluster_vs_cluster(
     neg_log10_padj = -np.log10(results["padj"].clip(lower=1e-300))
     results["neg_log10_padj"] = neg_log10_padj
 
-    fig = volcano_fig_from_results(
+    fig, _n_mark = volcano_fig_from_results(
         results,
         title=title,
         neg_log10_padj_threshold=neg_log10_padj_threshold,
@@ -803,6 +804,10 @@ class ClusteringModule:
                             default_width=640,
                             default_height=520,
                         ),
+                        html.Div(
+                            id="hc-volcano-mark-legend",
+                            children=mark_legend_banner(0, None),
+                        ),
                         dcc.Loading(
                             dbc.Row(
                                 [
@@ -1364,6 +1369,7 @@ class ClusteringModule:
             Output("hc-volcano-mark-wrap", "style"),
             Output("hc-volcano-mark-col", "options"),
             Output("hc-volcano-mark-col", "value"),
+            Output("hc-volcano-mark-legend", "children"),
             Input("hc-volcano-run", "n_clicks"),
             State("hc-cluster-sel", "data"),
             State("hc-maxclust-applied", "data"),
@@ -1391,7 +1397,8 @@ class ClusteringModule:
             empty = go.Figure()
             hide = {"display": "none"}
             show = {"display": "block"}
-            no_mark = (hide, [], None)
+            clear_legend = mark_legend_banner(0, None)
+            no_mark = (hide, [], None, clear_legend)
             if "Z_samples" not in _HC_RUNTIME:
                 return empty, "Run clustering first.", None, *no_mark
             bins = _normalize_bin_sel(selected)
@@ -1461,7 +1468,7 @@ class ClusteringModule:
                 "fc_thr": fc_thr,
                 "xaxis_title": x_label,
             }
-            fig = volcano_fig_from_results(
+            fig, _n_mark = volcano_fig_from_results(
                 results,
                 title=title,
                 neg_log10_padj_threshold=padj_thr,
@@ -1486,10 +1493,12 @@ class ClusteringModule:
                 mark_wrap,
                 mark_opts,
                 None,
+                clear_legend,
             )
 
         @app.callback(
             Output("hc-volcano", "figure", allow_duplicate=True),
+            Output("hc-volcano-mark-legend", "children", allow_duplicate=True),
             Input("hc-volcano-mark-col", "value"),
             Input("hc-volcano-mark-entry", "value"),
             Input("hc-volcano-fig-w", "value"),
@@ -1501,12 +1510,12 @@ class ClusteringModule:
             results = _HC_RUNTIME.get("volcano_results")
             meta = _HC_RUNTIME.get("volcano_plot_meta")
             if results is None or not meta:
-                return no_update
+                return no_update, no_update
             mark_genes = genes_with_meta_entry(
                 _HC_RUNTIME.get("locus_lookup"), mark_col, mark_entry
             )
             mark_label = f"{mark_col}={mark_entry}" if mark_col and mark_entry else None
-            fig = volcano_fig_from_results(
+            fig, n_mark = volcano_fig_from_results(
                 results,
                 title=meta["title"],
                 neg_log10_padj_threshold=meta["padj_thr"],
@@ -1518,8 +1527,9 @@ class ClusteringModule:
                     _HC_RUNTIME.get("locus_lookup"), list(gene_meta_cols or [])
                 ),
             )
-            return set_fig_size(
-                fig, fig_w, fig_h, default_width=640, default_height=520
+            return (
+                set_fig_size(fig, fig_w, fig_h, default_width=640, default_height=520),
+                mark_legend_banner(n_mark, mark_label),
             )
 
         @app.callback(
