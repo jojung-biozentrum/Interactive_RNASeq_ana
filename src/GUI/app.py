@@ -83,20 +83,51 @@ def create_app(
     url_base_pathname: str | None = None,
     secret_config: str | None = None,
 ) -> Dash:
+    """Build the Dash app.
+
+    Safety rules (Virtual-server):
+    - Any non-empty ``url_base_pathname`` (nginx proxy) **forces read-only**.
+      Custom wrappers that only pass the URL prefix cannot accidentally open
+      writable UI.
+    - Writable requires explicit ``readonly=False`` **and** no URL prefix
+      (plus ``--writable`` / ``DASH_WRITABLE=1`` at the CLI/env layer).
+    """
+    prefix = normalize_url_base_pathname(
+        url_base_pathname
+        if url_base_pathname is not None
+        else os.environ.get("DASH_URL_BASE_PATHNAME")
+    )
+    # Proxied dashboard deploys are always read-only — no escape hatch.
+    if prefix is not None:
+        if readonly is False:
+            raise ValueError(
+                f"Writable mode is not allowed with url_base_pathname={prefix!r}. "
+                "Omit the URL prefix for local --writable use."
+            )
+        readonly = True
+        os.environ["DASH_READONLY"] = "1"
+        os.environ.pop("DASH_WRITABLE", None)
+
     mode = mode_from_env(readonly=readonly, default_project=default_project)
+    # Readonly always pins a data root (never an empty / wrong desktop path).
+    if mode.readonly and not mode.data_root:
+        mode = mode_from_env(
+            readonly=True,
+            default_project=default_project or SERVER_DEFAULT_DATA_ROOT,
+        )
+
     dash_kwargs: dict = {
         "external_stylesheets": [dbc.themes.FLATLY],
         "suppress_callback_exceptions": True,
         "title": "Biofilm RNA-Seq Viewer",
     }
-    prefix = normalize_url_base_pathname(url_base_pathname)
     if prefix:
         dash_kwargs["url_base_pathname"] = prefix
 
     app = Dash(__name__, **dash_kwargs)
     attach_mode(app, mode)
 
-    secret = (secret_config or "").strip()
+    secret = (secret_config or os.environ.get("DASH_SECRET_CONFIG") or "").strip()
     if secret:
         from src.GUI.auth import enable_basic_auth, load_basic_auth_users, load_secret_key
 
@@ -116,7 +147,7 @@ def create_app(
 
     if mode.readonly:
         # Prefer mode.data_root (DASH_DEFAULT_PROJECT / DASH_DATA_ROOT /
-        # biofilm-microenvironments2). Never fall back to the desktop WSL path.
+        # biofilm-microenvironments2). Never fall back to a desktop WSL path.
         root = str(mode.data_root or SERVER_DEFAULT_DATA_ROOT)
         blob, _status, opts, first = _load_project_blob(root, readonly=True)
         # Hidden anchors so shared callbacks keep their component ids.
@@ -189,6 +220,7 @@ def create_app(
         className="pb-5",
     )
 
+    # Never register disk-write callbacks in readonly (defense in depth).
     _register_core_callbacks(app, readonly=mode.readonly)
     if not mode.readonly:
         _register_browse_callbacks(app)

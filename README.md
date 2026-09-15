@@ -26,7 +26,10 @@ Register / Filter. Writable desktop UI needs an explicit `--writable` (or
 `DASH_WRITABLE=1`) and must not be used on the server.
 
 Gunicorn must use `src.GUI.wsgi:server`, which **forces** readonly (see
-[deploy/README.md](deploy/README.md)).
+[deploy/README.md](deploy/README.md)). On the lab VM run
+`bash deploy/install-dashboard-interactive.sh` once so systemd owns the
+process. Any wrapper that passes `url_base_pathname="/interactive/"` is also
+forced read-only by `create_app`.
 
 In read-only mode the data folder is fixed
 (`…/biofilm-microenvironments2` or `DASH_DEFAULT_PROJECT`), auth is required,
