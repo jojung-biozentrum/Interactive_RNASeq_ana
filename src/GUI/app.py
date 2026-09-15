@@ -32,12 +32,14 @@ from src.GUI.data_store import load_selected, session_to_store
 from src.GUI.modules import build_registry
 from src.GUI.project import DatasetEntry, open_project
 from src.GUI.runtime import (
+    SERVER_DEFAULT_DATA_ROOT,
     attach_mode,
     mode_from_env,
     normalize_url_base_pathname,
 )
 
-# Pre-filled working folder in the UI and ``--project`` default (desktop).
+# Pre-filled working folder in the UI and ``--project`` default (desktop / WSL).
+# Virtual-server readonly mode must NOT fall back to this path.
 DEFAULT_PROJECT = "/mnt/bronto/Johannes"
 
 
@@ -112,7 +114,9 @@ def create_app(
     active_tab = modules[0].id if modules else "pca"
 
     if mode.readonly:
-        root = str(mode.data_root or DEFAULT_PROJECT)
+        # Prefer mode.data_root (DASH_DEFAULT_PROJECT / DASH_DATA_ROOT /
+        # biofilm-microenvironments2). Never fall back to the desktop WSL path.
+        root = str(mode.data_root or SERVER_DEFAULT_DATA_ROOT)
         blob, _status, opts, first = _load_project_blob(root, readonly=True)
         # Hidden anchors so shared callbacks keep their component ids.
         project_block: list = [

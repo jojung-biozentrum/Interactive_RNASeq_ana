@@ -13,6 +13,8 @@ from dash import Dash
 
 _CONFIG_KEY = "INTERACTIVE_RNASEQ_READONLY"
 _DEFAULT_DATA_ROOT = "/home/lab/data/Johannes/biofilm-microenvironments2"
+# Public alias for app.py / deploy (readonly fallback).
+SERVER_DEFAULT_DATA_ROOT = _DEFAULT_DATA_ROOT
 
 
 @dataclass(frozen=True)
