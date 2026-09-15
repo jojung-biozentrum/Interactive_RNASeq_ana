@@ -40,9 +40,8 @@ from src.GUI.runtime import (
     normalize_url_base_pathname,
 )
 
-# Pre-filled working folder in the UI and ``--project`` default (desktop / WSL).
-# Virtual-server readonly mode must NOT fall back to this path.
-DEFAULT_PROJECT = "/mnt/bronto/Johannes"
+# Prefill for --writable desktop runs. Readonly uses SERVER_DEFAULT_DATA_ROOT.
+DEFAULT_PROJECT = SERVER_DEFAULT_DATA_ROOT
 
 
 def _ds_opts(datasets: list) -> list[dict]:
