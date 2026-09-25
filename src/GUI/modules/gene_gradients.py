@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import math
-import re
 from pathlib import Path
 
 from dash import Dash, Input, Output, State, callback_context, dcc, html, no_update
@@ -23,6 +22,7 @@ from src.GUI.project import resolve_celov_id_col
 
 from ..components.folder_browser import pick_save_file_dialog
 from ..components.gene_meta_mark import (
+    _natural_key,
     add_marked_gene_trace,
     entry_dropdown_options,
     gene_hover_text,
@@ -36,7 +36,14 @@ from ..components.sample_detail import (
     gene_detail_placeholder,
     gene_detail_table,
 )
-from ..data_store import session_from_store
+from ..components.controls import plotly_title as _plotly_title
+from ..data_store import (
+    active_dataset_entry,
+    active_dataset_name as _active_dataset_name,
+    locus_path_from_session,
+    meta_columns_from_store,
+    session_from_store,
+)
 
 _GRAPH_CONFIG = {
     "toImageButtonOptions": {"format": "svg", "filename": "gene_gradients"},
@@ -88,27 +95,6 @@ _PROFILE_RIGHT = 20
 _GRAD_RUNTIME: dict = {}
 
 
-def _plotly_title(*lines: str) -> dict:
-    text = "<br>".join(line for line in lines if line is not None and str(line).strip() != "")
-    return {"text": text, "x": 0.5, "xanchor": "center"}
-
-
-def _active_dataset_name(session_blob) -> str:
-    names = (session_blob or {}).get("active_datasets") or []
-    return str(names[0]) if names else "dataset"
-
-
-def _natural_key(value) -> list:
-    parts = re.split(r"(\d+)", str(value))
-    key: list = []
-    for p in parts:
-        if p.isdigit():
-            key.append(int(p))
-        elif p:
-            key.append(p.lower())
-    return key
-
-
 def _natural_sorted(values) -> list[str]:
     return sorted((str(v) for v in values), key=_natural_key)
 
@@ -145,11 +131,17 @@ def gene_region_gradients(
     order_col: str,
     order_levels: list[str],
     methods: list[str],
+    *,
+    replicate_col: str | None = None,
+    pool: bool = True,
 ) -> pd.DataFrame:
     """Port of ``gene_region_gradient_{pearson,spearman}`` (genes × samples).
 
     Correlation of each gene's sample values vs integer ranks of ordered levels.
     Dynamic range = max(region means) − min(region means) over ``order_levels``.
+
+    ``pool=True`` (notebook / parallel-conditions): all samples together.
+    ``pool=False``: Pearson/Spearman/Kendall within each replicate, then mean ρ.
     """
     methods = [m for m in methods if m in _METHODS]
     if not methods:
@@ -189,21 +181,28 @@ def gene_region_gradients(
         }
     )
 
+    def _rho_one(values: pd.Series, ranks: pd.Series, method: str) -> float:
+        mask = values.notna() & ranks.notna()
+        if int(mask.sum()) < 3:
+            return float("nan")
+        return _correlate(
+            values[mask].to_numpy(dtype=float),
+            ranks[mask].to_numpy(dtype=float),
+            method,
+        )
+
     for method in methods:
         rhos: list[float] = []
         for gene in expr.index:
             values = expr.loc[gene]
-            mask = values.notna() & region_rank.notna()
-            if int(mask.sum()) < 3:
-                rhos.append(float("nan"))
+            if pool or not replicate_col or replicate_col not in meta.columns:
+                rhos.append(_rho_one(values, region_rank, method))
                 continue
-            rhos.append(
-                _correlate(
-                    values[mask].to_numpy(dtype=float),
-                    region_rank[mask].to_numpy(dtype=float),
-                    method,
-                )
-            )
+            per_rep = []
+            for _rep, idx in meta.groupby(meta[replicate_col].astype(str), dropna=True).groups.items():
+                per_rep.append(_rho_one(values.loc[idx], region_rank.loc[idx], method))
+            finite = [r for r in per_rep if np.isfinite(r)]
+            rhos.append(float(np.mean(finite)) if finite else float("nan"))
         col = _METHOD_COLS[method]
         abs_col = _ABS_COLS[method]
         out[col] = rhos
@@ -408,6 +407,9 @@ def gene_profile_grid_fig(
     order_levels: list[str],
     rep_col: str | None,
     results: pd.DataFrame | None = None,
+    show_points: bool = False,
+    error_bars: bool = False,
+    mean_color: str | None = None,
 ) -> go.Figure:
     """Notebook-style region profiles (line + markers per replicate), ≤6×6 grid.
 
@@ -466,9 +468,97 @@ def gene_profile_grid_fig(
         replicates = ["all"]
 
     legend_done: set[str] = set()
+    mean_only = bool(show_points or error_bars or mean_color)
     for gi, gene in enumerate(genes):
         row = gi // n_cols + 1
         col = gi % n_cols + 1
+        if mean_only:
+            xs_pts: list[float] = []
+            ys_pts: list[float] = []
+            ys: list[float | None] = []
+            yerr: list[float] = []
+            for i, level in enumerate(order_levels):
+                samples = meta.index[meta[order_col] == level]
+                samples = [s for s in samples if s in expr.columns]
+                if not samples or gene not in expr.index:
+                    ys.append(None)
+                    yerr.append(0.0)
+                    continue
+                vals = pd.to_numeric(expr.loc[gene, samples], errors="coerce").to_numpy(dtype=float)
+                finite = vals[np.isfinite(vals)]
+                for v in finite:
+                    xs_pts.append(float(i))
+                    ys_pts.append(float(v))
+                if len(finite) == 0:
+                    ys.append(None)
+                    yerr.append(0.0)
+                    continue
+                ys.append(float(np.mean(finite)))
+                yerr.append(float(np.std(finite, ddof=1)) if len(finite) > 1 else 0.0)
+            if show_points and xs_pts:
+                show_pts = "samples" not in legend_done
+                if show_pts:
+                    legend_done.add("samples")
+                fig.add_trace(
+                    go.Scatter(
+                        x=xs_pts,
+                        y=ys_pts,
+                        mode="markers",
+                        name="samples",
+                        marker=dict(size=6, color="#888888", opacity=0.55),
+                        legendgroup="samples",
+                        showlegend=show_pts,
+                        hovertemplate=(
+                            f"{titles[gi]}<br>level=%{{x}}<br>expr=%{{y:.3g}}<extra></extra>"
+                        ),
+                    ),
+                    row=row,
+                    col=col,
+                )
+            if not all(v is None for v in ys):
+                show_mean = "mean" not in legend_done
+                if show_mean:
+                    legend_done.add("mean")
+                color = mean_color or "black"
+                fig.add_trace(
+                    go.Scatter(
+                        x=x_pos,
+                        y=ys,
+                        mode="lines+markers",
+                        name="mean",
+                        line=dict(color=color, width=2),
+                        marker=dict(size=8, color=color),
+                        error_y=(
+                            dict(
+                                type="data",
+                                array=yerr,
+                                color=color,
+                                thickness=1.2,
+                                width=4,
+                            )
+                            if error_bars
+                            else None
+                        ),
+                        legendgroup="mean",
+                        showlegend=show_mean,
+                        customdata=[gene] * len(x_pos),
+                        hovertemplate=(
+                            f"{titles[gi]}<br>level=%{{x}}<br>mean=%{{y:.3g}}<extra></extra>"
+                        ),
+                    ),
+                    row=row,
+                    col=col,
+                )
+            fig.update_xaxes(
+                tickmode="array",
+                tickvals=x_pos,
+                ticktext=x_labels,
+                title_text=order_col if row == n_rows else "",
+                row=row,
+                col=col,
+            )
+            fig.update_yaxes(title_text="expression" if col == 1 else "", row=row, col=col)
+            continue
         for ri, replicate in enumerate(replicates):
             if rep_col and rep_col in meta.columns and replicate != "all":
                 rep_meta = meta.loc[meta[rep_col].astype(str) == str(replicate)]
@@ -696,11 +786,9 @@ class GeneGradientsModule:
         return html.Div(
             [
                 html.P(
-                    "Correlate gene expression with ordered metadata levels "
-                    "(distances.ipynb gradients; Pearson / Spearman + Kendall τ). "
-                    "Subset samples, drag level order, then set per-plot thresholds after Run. "
-                    "Click genes on correlation / pairwise plots for profiles (below Celov) "
-                    "and locus-lookup metadata (beside pairwise plots).",
+                    "Subset samples, drag the level order, choose pooled or "
+                    "within-replicate, then Run. Shown: correlation vs dynamic range "
+                    "and pairwise plots. Click a gene for its profile and metadata.",
                     className="text-muted small",
                 ),
                 dbc.Row(
@@ -731,7 +819,25 @@ class GeneGradientsModule:
                                 html.Label("Replicate column"),
                                 dcc.Dropdown(id="grad-rep-col", clearable=True),
                             ],
-                            md=3,
+                            md=2,
+                        ),
+                        dbc.Col(
+                            [
+                                html.Label("Correlation"),
+                                dcc.RadioItems(
+                                    id="grad-pool-mode",
+                                    options=[
+                                        {"label": " Pooled", "value": "pooled"},
+                                        {
+                                            "label": " Within-replicate then mean",
+                                            "value": "per_rep",
+                                        },
+                                    ],
+                                    value="pooled",
+                                    inline=True,
+                                ),
+                            ],
+                            md=4,
                         ),
                     ],
                     className="g-2 mb-2",
@@ -935,15 +1041,14 @@ class GeneGradientsModule:
             Input("session-store", "data"),
         )
         def _fill_meta_cols(session_blob):
-            session = session_from_store(session_blob)
-            if not session.ready or session.metadata is None:
-                return [], [], [], None, None, None
             cols = [
                 c
-                for c in session.meta_columns()
+                for c in meta_columns_from_store(session_blob)
                 if not str(c).startswith("_")
                 and not (str(c).startswith("PC") and str(c)[2:].isdigit())
             ]
+            if not cols:
+                return [], [], [], None, None, None
             opts = [{"label": c, "value": c} for c in cols]
             subset = "Biofilm" if "Biofilm" in cols else (cols[0] if cols else None)
             order = (
@@ -1038,6 +1143,7 @@ class GeneGradientsModule:
             State("grad-order-col", "value"),
             State("grad-order-store", "data"),
             State("grad-rep-col", "value"),
+            State("grad-pool-mode", "value"),
             prevent_initial_call=True,
         )
         def _run(
@@ -1049,6 +1155,7 @@ class GeneGradientsModule:
             order_col,
             order_levels,
             rep_col,
+            pool_mode,
         ):
             hide = {"display": "none"}
             show = {"display": "block"}
@@ -1125,28 +1232,32 @@ class GeneGradientsModule:
                 expr_sub = expr[samples]
                 meta_use = meta_sub.loc[samples]
 
+                pool = (pool_mode or "pooled") != "per_rep"
+                if not pool and not rep_col:
+                    return (
+                        no_update,
+                        "Choose a replicate column for within-replicate then mean.",
+                        no_update,
+                        no_update,
+                        hide,
+                        hide,
+                        hide,
+                        *empty_mark,
+                    )
                 results = gene_region_gradients(
-                    expr_sub, meta_use, order_col, order_levels, methods
+                    expr_sub,
+                    meta_use,
+                    order_col,
+                    order_levels,
+                    methods,
+                    replicate_col=rep_col,
+                    pool=pool,
                 )
                 lookup = None
-                active = (session_blob or {}).get("active_datasets") or []
-                name = active[0] if active else None
-                entry = next(
-                    (
-                        d
-                        for d in (project_blob or {}).get("datasets", [])
-                        if d.get("name") == name
-                    ),
-                    None,
-                )
-                locus = (entry or {}).get("locus_lookup") or ""
-                root = (project_blob or {}).get("root")
+                locus = locus_path_from_session(session_blob, project_blob)
                 if locus:
-                    path = Path(locus)
-                    if root and not path.is_absolute():
-                        path = Path(root) / path
                     try:
-                        lookup = load_locus_lookup(path)
+                        lookup = load_locus_lookup(locus)
                     except Exception:  # noqa: BLE001
                         lookup = None
 
@@ -1176,7 +1287,8 @@ class GeneGradientsModule:
                     cache,
                     html.Span(
                         [
-                            f"Gradients done: {len(results)} genes × {expr_sub.shape[1]} samples; "
+                            f"Gradients done ({'pooled' if pool else 'within-replicate mean'}): "
+                            f"{len(results)} genes × {expr_sub.shape[1]} samples; "
                             f"levels {order_levels}; Pearson / Spearman / Kendall. "
                             "Set thresholds under each plot. ",
                             html.Strong(
@@ -1497,24 +1609,11 @@ class GeneGradientsModule:
             if score_col not in results.columns:
                 return f"Score column {score_col!r} was not computed — re-run with that measure."
             try:
-                active = (session_blob or {}).get("active_datasets") or []
-                name = active[0] if active else None
-                entry = next(
-                    (
-                        d
-                        for d in (project_blob or {}).get("datasets", [])
-                        if d.get("name") == name
-                    ),
-                    None,
-                )
+                entry = active_dataset_entry(session_blob, project_blob)
                 lookup = None
-                locus = (entry or {}).get("locus_lookup") or ""
-                root = (project_blob or {}).get("root")
+                locus = locus_path_from_session(session_blob, project_blob)
                 if locus:
-                    path = Path(locus)
-                    if root and not path.is_absolute():
-                        path = Path(root) / path
-                    lookup = load_locus_lookup(path)
+                    lookup = load_locus_lookup(locus)
                 paths = save_gradient_celov(
                     results,
                     score_col,

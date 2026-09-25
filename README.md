@@ -57,15 +57,21 @@ export (resulting txt files can be imported in the biocyc metabolic map as singl
 
 ### PCA
 
-Full PCA on the unscaled count/normalized matrix.
+Full PCA on the unscaled count/normalized matrix (`sklearn.decomposition.PCA`, no scaler).
 Choose which PCs to plot (X/Y, optional Z), scree plot (top 10 PCs), optional split aesthetics on a certain column and change olor, shape and size based on different columns.
 Celov export for PC weighed genes to find up-/downregulated pathways for this PC in the biocyc viewer.
 
+**ARI of separation** — for each of the first *n* PCs (default 10), a one-sided threshold covers all positive-class samples (side from class medians). Score = `sklearn.metrics.adjusted_rand_score`.
+
 Additional option to run linear classification to separate LC from biofilm conditions. If the two can be separated for relatively low dimensions this means that the variance across LC conditions covers biological variance different from that of biofilms. Celov export for genes weighed according to the linear classifier shows up-/downregulated pathways forbiofilm vs LC.
+
+**Condition enrichment** — Pearson / Spearman of rankable metadata vs top PCs plus an optional biofilm axis (`sklearn.linear_model.LinearRegression` of the label on *k* PCs; samples are projected onto the normalized coefficients). Categorical: `var_ratio` = within-entry variance / total axis variance.
+
+**Gene expression** — map selected genes onto the current PC axes with a viridis scale (own min–max per gene). Select by gene ID or a locus-lookup name column (`geneName`, …). The same plot is available from **Weighed genes** and **Linear classifier**, choosing from the top PC / classifier weights (top *N*, `|weight|` / up / down).
 
 ### UMAP
 
-UMAP on the unscaled count matrix (same params as ``UMAP.ipynb``).
+UMAP on the unscaled count matrix.
 Same aesthetic / split-by controls as PCA.
 
 ### Hierarchical clustering
@@ -76,6 +82,12 @@ Same aesthetic / split-by controls as PCA.
 **Cluster cut (samples)**
 - **Total number of clusters** (default 2) with **Apply** to color heatmaps / PCA / dendrogram at that cut.
 - Or find the first pure cluster for a metadata column/value and color clusters at that step.
+
+**Cluster table**
+- Sample dataframe with a `cluster` column at the current cut; filter by cluster or Bin A / Bin B.
+
+**Cluster cut (genes)**
+- Separate `maxclust` on the gene linkage; genes × genes heatmap is colored by gene cluster; gene table + locus lookup, filterable by cluster.
 
 **Heatmap**
 - Tabs: samples × samples (euclidean distances), genes × genes, samples × genes (expression).
@@ -94,6 +106,10 @@ Same aesthetic / split-by controls as PCA.
 - Click a gene on the volcano for locus-lookup metadata (table on the right).
 - Celov export (score: expression difference, −log10(padj), or product; genes: up / down / up&down / all).
 
+**Condition enrichment**
+- Fisher exact (`scipy.stats.fisher_exact` + BH `false_discovery_control`) and Mann–Whitney U on selected metadata columns.
+- Background: **Bin B** or **~treatment** (complement of Bin A / rest).
+
 ### Gene gradients
 
 Per-gene correlation of expression vs ordered metadata levels
@@ -103,6 +119,8 @@ Per-gene correlation of expression vs ordered metadata levels
   and **drag** levels to set order (natural sort as default: `region1`, `region2`, …).
 - Optional replicate column (used for profile lines after clicking genes).
 - Run always computes Pearson, Spearman, and Kendall τ (all three plots + pairwise).
+- **Pooled**: all samples vs integer ranks.
+- **Within-replicate then mean**: ρ per replicate (≥3 points), then mean across replicates. Dynamic range stays region means.
 - Scatter: correlation (y) vs dynamic range of region means (x); **per-plot** |ρ|/|τ|
   and dynamic-range thresholds (grey below / black above).
 - After Run: mark genes by locus-lookup column + entry (`;`-separated tokens) on all correlation and pairwise plots.
@@ -124,15 +142,46 @@ Planned: supervised ML (decision tree / related methods) to predict metadata
 conditions from the transcriptome, with train/test metrics and gene importances.
 Tab is a stub for now — see the in-app description.
 
-### Parallel conditions *(placeholder)*
+### Volcano by condition
 
-Planned: subset + ordered gradient column → hierarchical clustering per gradient
-level → match closest clusters → find condition columns that best correlate with
-cluster differences, with significance vs the rest of the dataset.
-Tab is a stub for now — see the in-app description.
+Same Welch + BH volcano as the cluster contrast, but groups come from a metadata
+column. A = selected entries (or numeric `<`/`>`);
+background is **B** (other selected entries) or **~treatment** (complement). Active
+filters drop overlapping samples; need ≥2 samples per side.
+
+### Parallel conditions
+
+Per ordered level (e.g. `GrowthPhase` region1–4): Ward on `{level samples} ∪ {all LC}`;
+`separation_k` = smallest `maxclust` with no mixed biofilm/LC cluster; closest LC
+cluster = Euclidean distance of mean CLR vectors. Unique = set difference (empty
+unique → all closest). Not replicate-wise.
+
+Then optional: Fisher / MWU enrichment (closest vs rest) or **pooled** gene
+gradients on uniquely-close LC vs region rank.
 
 ### Gene enrichment *(placeholder)*
 Planned: whereever there is the celov option, write own pathway enrichment code/use other enrichment tools
+
+## Methods (functions and computational tools)
+
+Matrix recipe (every analysis): genes × samples after `geneLength` → `dropna` → transpose.
+No `log1p`, no `StandardScaler`. Values are used as loaded (typically CLR).
+
+| Analysis | Functions / libraries | What is computed |
+|---|---|---|
+| PCA | `sklearn.decomposition.PCA` | Unscaled SVD; scores = `fit_transform`; correlation loadings = `V √λ` |
+| PCA ARI | `pc_separation_ari`, `sklearn.metrics.adjusted_rand_score` | One-sided PC threshold covering all positives; ARI vs label |
+| Linear classifier | `LogisticRegression`, `StratifiedKFold`, balanced accuracy | First *n* PCs; gene weights = loadings @ (`w / √λ`) |
+| PCA condition enrichment | `LinearRegression`, `pearsonr` / `spearmanr`, `var_ratio` | Biofilm axis = `X (β / ‖β‖)`; numeric ρ; categorical within/total var |
+| UMAP | `umap.UMAP` | Unchanged tab (`n_neighbors=20`, `min_dist=0.5`) |
+| Hierarchical clustering | `scipy.cluster.hierarchy.linkage` / `fcluster` | Ward (or average/complete/single) Euclidean; `maxclust` cut |
+| Cluster volcano | `scipy.stats.ttest_ind` (Welch), `false_discovery_control` (BH) | ΔCLR (mean or median); `−log10(padj)` |
+| HC condition enrichment | `fisher_exact`, `mannwhitneyu` | 2×2 entry×(A vs B or ~treatment); numeric ranks via `to_numeric_rank` |
+| Volcano by condition | same Welch/BH + `resolve_condition_bins` | Metadata A vs B / ~treatment |
+| Gene gradients | `pearsonr`, `spearmanr`, `kendalltau` | Pooled samples vs rank 1…k, or mean of per-replicate ρ |
+| Parallel conditions | `separation_k`, centroid L2, Fisher/MWU, pooled gradients | Per-level Ward + unique closest LC |
+
+Shared helpers live in `src/GUI/modules/condition_enrichment.py`.
 
 ### Install
 

@@ -25,7 +25,13 @@ from src.GUI.components.folder_browser import (
     pick_file_dialog,
     pick_folder_dialog,
 )
-from src.GUI.data_store import load_selected, session_to_store
+from src.GUI.data_store import (
+    SessionData,
+    clear_analysis_runtimes,
+    load_selected,
+    session_to_store,
+    set_live_session,
+)
 from src.GUI.modules import MODULE_REGISTRY
 from src.GUI.project import DatasetEntry, open_project
 
@@ -111,6 +117,7 @@ def create_app(default_project: str | None = None) -> Dash:
     _register_browse_callbacks(app)
     for mod in MODULE_REGISTRY:
         mod.register_callbacks(app)
+    _register_dataset_reset_callbacks(app)
 
     return app
 
@@ -390,11 +397,15 @@ def _register_core_callbacks(app: Dash) -> None:
         prevent_initial_call=True,
     )
     def _load_session(active, blob):
+        empty = {"ready": False, "error": "No project", "meta_columns": [], "key": None}
         if not blob or not blob.get("root"):
-            return {"ready": False, "error": "No project", "meta_columns": []}, "Open a working folder first."
+            set_live_session(SessionData(error="No project"))
+            return empty, "Open a working folder first."
         name = active if isinstance(active, str) else (active[0] if active else None)
         if not name:
-            return {"ready": False, "error": "No dataset selected", "meta_columns": []}, "Select an active dataset."
+            set_live_session(SessionData(error="No dataset selected"))
+            empty["error"] = "No dataset selected"
+            return empty, "Select an active dataset."
         from src.GUI.project import Project
 
         project = Project.load(blob["root"])
@@ -446,10 +457,27 @@ def _register_core_callbacks(app: Dash) -> None:
         return opts, (cur or None)
 
 
-def no_update_triple(msg: str):
-    from dash import no_update
+def _register_dataset_reset_callbacks(app: Dash) -> None:
+    """Drop former-dataset analysis results when the active dataset changes."""
 
-    return no_update, msg, no_update
+    @app.callback(
+        Output("pca-cache", "data", allow_duplicate=True),
+        Output("pca-clf-cache", "data", allow_duplicate=True),
+        Output("hc-cache", "data", allow_duplicate=True),
+        Output("hc-cluster-sel", "data", allow_duplicate=True),
+        Output("umap-cache", "data", allow_duplicate=True),
+        Output("grad-cache", "data", allow_duplicate=True),
+        Output("grad-selected-genes", "data", allow_duplicate=True),
+        Output("par-cache", "data", allow_duplicate=True),
+        Output("par-grad-cache", "data", allow_duplicate=True),
+        Output("par-grad-selected", "data", allow_duplicate=True),
+        Output("vc-cache", "data", allow_duplicate=True),
+        Input("session-store", "data"),
+        prevent_initial_call=True,
+    )
+    def _clear_stale_analysis(_blob):
+        clear_analysis_runtimes()
+        return None, None, None, {"a": [], "b": []}, None, None, [], None, None, [], None
 
 
 def main(argv: list[str] | None = None) -> None:

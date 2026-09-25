@@ -527,12 +527,8 @@ def volcano_fig_from_results(
     mark_genes: set[str] | None = None,
     mark_label: str | None = None,
     hover_map: dict[str, str] | None = None,
-) -> tuple[go.Figure, int]:
-    """Plotly volcano matching distances.ipynb scatter + threshold lines.
-
-    Returns ``(figure, n_marked)``. Marked genes are drawn without a Plotly
-    legend so figure margins stay fixed; use ``mark_legend_banner`` in the UI.
-    """
+) -> go.Figure:
+    """Plotly volcano matching distances.ipynb scatter + threshold lines."""
     padj_thr = float(neg_log10_padj_threshold)
     fc_thr = float(fold_change_threshold)
     selected = (results["abs_fold_change"] > fc_thr) & (
@@ -570,7 +566,6 @@ def volcano_fig_from_results(
         size=8,
         opacity=1.0,
         hover_map=hover_map,
-        showlegend=False,
     )
     fig.add_hline(y=padj_thr, line=dict(dash="dash", color="#808080", width=0.8))
     fig.add_vline(x=fc_thr, line=dict(dash="dash", color="#808080", width=0.8))
@@ -589,16 +584,15 @@ def volcano_fig_from_results(
         clickmode="event+select",
         hovermode="closest",
     )
-    # Never toggle Plotly legend here — right margin would resize the axes.
     apply_export_layout(
         fig,
         title_lines=title_lines,
         width=640,
         height=520,
-        legend=False,
+        legend=bool(n_mark),
         uirevision=f"hc-volcano-{padj_thr:g}-{fc_thr:g}",
     )
-    return fig, n_mark
+    return fig
 
 
 def _scroll_x(children: list) -> html.Div:

@@ -11,9 +11,8 @@ def dataset_picker_layout() -> html.Div:
         [
             html.H5("Datasets"),
             html.P(
-                "Browse for expression, sample metadata, and locus lookup "
-                "(genes × samples matrices). Paths are stored relative to the "
-                "working folder when possible. Only one dataset is active at a time.",
+                "Browse for expression, sample metadata, and locus lookup. "
+                "Only one dataset is active at a time.",
                 className="text-muted small",
             ),
             dbc.Row(
@@ -141,7 +140,6 @@ def dataset_picker_layout() -> html.Div:
                 clearable=True,
             ),
             html.P(
-                "Columns from the active dataset’s gene metadata (locus lookup). "
                 "Selected fields appear when hovering gene points.",
                 className="text-muted small mb-2",
             ),

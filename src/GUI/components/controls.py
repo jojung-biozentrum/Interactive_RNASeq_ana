@@ -255,6 +255,33 @@ def fig_size_controls(
     return html.Div(kids, className="mb-1")
 
 
+def plotly_title(*lines: str) -> dict:
+    text = "<br>".join(line for line in lines if line is not None and str(line).strip() != "")
+    return {"text": text, "x": 0.5, "xanchor": "center"}
+
+
+def resolve_aes(color, shape, size, alpha, columns) -> dict:
+    columns = list(columns)
+    color_col, color_const = parse_aes_choice(color, columns)
+    shape_col, shape_const = parse_aes_choice(shape, columns)
+    size_col, size_raw = parse_aes_choice(size, columns)
+    size_const = None
+    if size_raw is not None:
+        try:
+            size_const = float(size_raw)
+        except ValueError:
+            size_const = 10.0
+    return {
+        "color_col": color_col,
+        "color_const": color_const,
+        "shape_col": shape_col,
+        "shape_const": shape_const,
+        "size_col": size_col,
+        "size_const": size_const,
+        "alpha": float(alpha) if alpha is not None else 0.85,
+    }
+
+
 def const_value(v: str) -> str:
     return f"{CONST}{v}"
 
@@ -291,9 +318,6 @@ def parse_aes_choice(value: str | None, columns: list[str] | None = None) -> tup
     if value in cols:
         return value, None
     return None, value
-
-
-_ALL_GROUP = "__all__"
 
 
 def aesthetic_panel(
@@ -376,22 +400,6 @@ def aesthetic_panel(
         )
     )
     return html.Div(children, className="mb-3 border-bottom pb-2")
-
-
-def aesthetic_controls(prefix: str = "aes") -> html.Div:
-    """Legacy single-block aesthetics (fixed string ids). Prefer ``aesthetic_panel``."""
-    return html.Div(
-        [
-            html.H6("Aesthetics", className="mt-2 mb-2"),
-            html.P(
-                "Choose a metadata column or a fixed value. "
-                "Legend lists color, shape, and size mappings separately (like seaborn relplot).",
-                className="text-muted small mb-2",
-            ),
-            aesthetic_panel(prefix, _ALL_GROUP, heading=None),
-        ],
-        className="mb-3",
-    )
 
 
 def _is_coord_col(name: str) -> bool:
@@ -911,9 +919,3 @@ def build_scatter(
     fig.update_layout(title=title)
     apply_export_layout(fig, title_lines=1, legend=True)
     return fig
-
-
-def size_array(meta: pd.DataFrame, size_col: str | None, default: float = 8.0) -> np.ndarray | float:
-    if size_col and size_col in meta.columns:
-        return np.asarray(_marker_sizes(meta[size_col], default=default), dtype=float)
-    return default

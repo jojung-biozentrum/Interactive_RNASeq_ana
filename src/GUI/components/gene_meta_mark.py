@@ -36,6 +36,34 @@ def _natural_key(value) -> list:
     return key
 
 
+def filter_ids_by_search(
+    ids,
+    search,
+    selected,
+    *,
+    labels: dict[str, str] | None = None,
+    limit: int = 80,
+) -> list[str]:
+    """Keep current selections plus up to ``limit`` search hits (2+ characters)."""
+    id_list = [str(x) for x in ids]
+    have = set(id_list)
+    keep = [str(x) for x in (selected or []) if x and str(x) in have]
+    q = (search or "").strip().lower()
+    if len(q) < 2:
+        return keep
+    extra: list[str] = []
+    labels = labels or {}
+    kept = set(keep)
+    for gid in id_list:
+        if gid in kept:
+            continue
+        if q in gid.lower() or q in str(labels.get(gid, "")).lower():
+            extra.append(gid)
+        if len(extra) >= limit:
+            break
+    return keep + extra
+
+
 def locus_mark_columns(lookup: pd.DataFrame | None) -> list[str]:
     if lookup is None or not isinstance(lookup, pd.DataFrame) or lookup.empty:
         return []

@@ -61,14 +61,6 @@ class Project:
     def yaml_path(self) -> Path:
         return self.root / "project.yaml"
 
-    def figures_dir(self) -> Path:
-        """Recommended figures folder (``figs/``); not created until a figure is saved."""
-        return self.root / "figs"
-
-    def exports_dir(self) -> Path:
-        """Recommended Celov / export folder; not created until a file is saved."""
-        return self.root / "celov_output"
-
     def resolve(self, relative: str) -> Path:
         p = Path(relative)
         if p.is_absolute():
@@ -142,44 +134,3 @@ def open_project(root: str | Path) -> Project:
     if not yaml_path.exists():
         return create_project(root)
     return Project.load(root)
-
-
-def save_figure(
-    fig,
-    stem: str,
-    out_dir: str | Path | None = None,
-    formats: tuple[str, ...] = ("png",),
-    project: Project | None = None,
-) -> list[Path]:
-    """Save a Plotly figure as png/svg/html.
-
-    ``out_dir`` defaults to ``project.figures_dir()`` (``figs/``) when a project is given.
-    Creates ``out_dir`` only when saving.
-    """
-    if out_dir is None:
-        if project is None:
-            raise ValueError("Provide out_dir or project")
-        out_dir = project.figures_dir()
-    out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    saved: list[Path] = []
-    for fmt in formats:
-        fmt = fmt.lower().lstrip(".")
-        path = out_dir / f"{stem}.{fmt}"
-        if fmt == "html":
-            fig.write_html(str(path))
-        elif fmt in {"png", "svg", "pdf", "jpeg", "jpg", "webp"}:
-            fig.write_image(str(path), format=fmt if fmt != "jpg" else "jpeg")
-        else:
-            raise ValueError(f"Unsupported figure format: {fmt}")
-        saved.append(path)
-    return saved
-
-
-def save_export(project: Project, df, filename: str) -> Path:
-    """Save a DataFrame CSV into ``celov_output/`` (created only when saving)."""
-    out_dir = project.exports_dir()
-    out_dir.mkdir(parents=True, exist_ok=True)
-    path = out_dir / filename
-    df.to_csv(path, index=True)
-    return path

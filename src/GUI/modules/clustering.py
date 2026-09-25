@@ -20,6 +20,7 @@ from ..components.controls import (
     EXPORT_H,
     EXPORT_W,
     fig_size_controls,
+    plotly_title as _plotly_title,
     set_fig_size,
 )
 from ..components.gene_meta_mark import (
@@ -28,7 +29,6 @@ from ..components.gene_meta_mark import (
     genes_with_meta_entry,
     locus_mark_columns,
     mark_controls,
-    mark_legend_banner,
 )
 from ..components.sample_detail import (
     gene_detail_placeholder,
@@ -37,7 +37,14 @@ from ..components.sample_detail import (
     sample_detail_table,
     samples_detail_table,
 )
-from ..data_store import SessionData, session_from_store
+from ..data_store import (
+    SessionData,
+    active_dataset_entry as _active_dataset_entry,
+    active_dataset_name as _active_dataset_name,
+    locus_path_from_session as _locus_path_from_session,
+    meta_columns_from_store,
+    session_from_store,
+)
 from .hc_plots import (
     detail_from_heatmap_click,
     dendrogram_colored_fig,
@@ -66,17 +73,6 @@ _LINKAGE_METHODS = [
 ]
 
 _HC_RUNTIME: dict = {}
-
-
-def _plotly_title(*lines: str) -> dict:
-    """Centered multi-line Plotly title."""
-    text = "<br>".join(line for line in lines if line is not None and str(line).strip() != "")
-    return {"text": text, "x": 0.5, "xanchor": "center"}
-
-
-def _active_dataset_name(session_blob) -> str:
-    names = (session_blob or {}).get("active_datasets") or []
-    return str(names[0]) if names else "dataset"
 
 
 def _brace_clusters(cids: list[int]) -> str:
@@ -166,7 +162,7 @@ def volcano_cluster_vs_cluster(
     neg_log10_padj = -np.log10(results["padj"].clip(lower=1e-300))
     results["neg_log10_padj"] = neg_log10_padj
 
-    fig, _n_mark = volcano_fig_from_results(
+    fig = volcano_fig_from_results(
         results,
         title=title,
         neg_log10_padj_threshold=neg_log10_padj_threshold,
@@ -198,31 +194,6 @@ def _volcano_weighed_for_celov(results: pd.DataFrame, score: str) -> pd.DataFram
     return pd.DataFrame(
         {"geneID": results["geneID"].astype(str).values, "gene_weight": weight.values}
     )
-
-
-def _active_dataset_entry(session_blob, project_blob) -> dict | None:
-    active = (session_blob or {}).get("active_datasets") or []
-    name = active[0] if active else None
-    if not name:
-        return None
-    return next(
-        (d for d in (project_blob or {}).get("datasets", []) if d.get("name") == name),
-        None,
-    )
-
-
-def _locus_path_from_session(session_blob, project_blob) -> str | None:
-    """Resolve locus lookup path from the first active dataset (same as PCA)."""
-    entry = _active_dataset_entry(session_blob, project_blob)
-    if not entry:
-        return None
-    locus = entry.get("locus_lookup") or ""
-    if not locus:
-        return None
-    root = (project_blob or {}).get("root")
-    if root and not Path(locus).is_absolute():
-        return str(Path(root) / locus)
-    return str(locus)
 
 
 def _empty_bin_sel() -> dict:
@@ -804,10 +775,6 @@ class ClusteringModule:
                             default_width=640,
                             default_height=520,
                         ),
-                        html.Div(
-                            id="hc-volcano-mark-legend",
-                            children=mark_legend_banner(0, None),
-                        ),
                         dcc.Loading(
                             dbc.Row(
                                 [
@@ -939,11 +906,7 @@ class ClusteringModule:
             Input("hc-cache", "data"),
         )
         def _fill_meta_cols(session_blob, cache):
-            cols = list((session_blob or {}).get("meta_columns", []))
-            if _HC_RUNTIME.get("score_df") is not None:
-                df = _HC_RUNTIME["score_df"]
-                pc = {c for c in df.columns if c.startswith("PC") and c[2:].isdigit()}
-                cols = [c for c in df.columns if c not in pc]
+            cols = meta_columns_from_store(session_blob)
             return [{"label": c, "value": c} for c in cols]
 
         @app.callback(
@@ -1369,7 +1332,6 @@ class ClusteringModule:
             Output("hc-volcano-mark-wrap", "style"),
             Output("hc-volcano-mark-col", "options"),
             Output("hc-volcano-mark-col", "value"),
-            Output("hc-volcano-mark-legend", "children"),
             Input("hc-volcano-run", "n_clicks"),
             State("hc-cluster-sel", "data"),
             State("hc-maxclust-applied", "data"),
@@ -1397,8 +1359,7 @@ class ClusteringModule:
             empty = go.Figure()
             hide = {"display": "none"}
             show = {"display": "block"}
-            clear_legend = mark_legend_banner(0, None)
-            no_mark = (hide, [], None, clear_legend)
+            no_mark = (hide, [], None)
             if "Z_samples" not in _HC_RUNTIME:
                 return empty, "Run clustering first.", None, *no_mark
             bins = _normalize_bin_sel(selected)
@@ -1468,7 +1429,7 @@ class ClusteringModule:
                 "fc_thr": fc_thr,
                 "xaxis_title": x_label,
             }
-            fig, _n_mark = volcano_fig_from_results(
+            fig = volcano_fig_from_results(
                 results,
                 title=title,
                 neg_log10_padj_threshold=padj_thr,
@@ -1493,12 +1454,10 @@ class ClusteringModule:
                 mark_wrap,
                 mark_opts,
                 None,
-                clear_legend,
             )
 
         @app.callback(
             Output("hc-volcano", "figure", allow_duplicate=True),
-            Output("hc-volcano-mark-legend", "children", allow_duplicate=True),
             Input("hc-volcano-mark-col", "value"),
             Input("hc-volcano-mark-entry", "value"),
             Input("hc-volcano-fig-w", "value"),
@@ -1510,12 +1469,12 @@ class ClusteringModule:
             results = _HC_RUNTIME.get("volcano_results")
             meta = _HC_RUNTIME.get("volcano_plot_meta")
             if results is None or not meta:
-                return no_update, no_update
+                return no_update
             mark_genes = genes_with_meta_entry(
                 _HC_RUNTIME.get("locus_lookup"), mark_col, mark_entry
             )
             mark_label = f"{mark_col}={mark_entry}" if mark_col and mark_entry else None
-            fig, n_mark = volcano_fig_from_results(
+            fig = volcano_fig_from_results(
                 results,
                 title=meta["title"],
                 neg_log10_padj_threshold=meta["padj_thr"],
@@ -1527,9 +1486,8 @@ class ClusteringModule:
                     _HC_RUNTIME.get("locus_lookup"), list(gene_meta_cols or [])
                 ),
             )
-            return (
-                set_fig_size(fig, fig_w, fig_h, default_width=640, default_height=520),
-                mark_legend_banner(n_mark, mark_label),
+            return set_fig_size(
+                fig, fig_w, fig_h, default_width=640, default_height=520
             )
 
         @app.callback(

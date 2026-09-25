@@ -175,8 +175,7 @@ class FilterModule:
                     className="py-2 small",
                 ),
                 html.P(
-                    "Filter sample columns via sample metadata, or gene rows via locus-lookup "
-                    "metadata (geneID ↔ locusTag). Locus lookup is required for gene-axis filters.",
+                    "Filter samples by metadata, or genes by locus-lookup columns.",
                     className="text-muted small",
                 ),
                 html.Div(id="flt-active-label", className="mb-2 fw-semibold"),
@@ -199,7 +198,7 @@ class FilterModule:
                         ),
                         dbc.Col(
                             html.P(
-                                "Gene-axis filters use the active dataset’s locus lookup path.",
+                                "Gene filters use the active dataset’s locus lookup.",
                                 className="text-muted small mt-4 mb-0",
                             ),
                             md=9,

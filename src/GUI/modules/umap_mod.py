@@ -16,11 +16,18 @@ from ..components.controls import (
     build_scatter,
     equal_xy_axes,
     fig_size_controls,
-    parse_aes_choice,
+    plotly_title as _plotly_title,
+    resolve_aes as _resolve_aes,
     set_fig_size,
 )
 from ..components.sample_detail import plot_with_sample_detail, register_sample_detail_callback
-from ..data_store import SessionData, session_from_store
+from ..data_store import (
+    SessionData,
+    active_dataset_name as _active_dataset_name,
+    meta_columns_from_store,
+    meta_levels,
+    session_from_store,
+)
 
 _AES_ALL = "__all__"
 _AES_PREFIX = "umap-aes"
@@ -71,40 +78,6 @@ def _run_umap(
     score_df = pd.DataFrame(embedding, index=session.expression.index, columns=cols)
     score_df = score_df.join(session.metadata)
     return score_df
-
-
-def _resolve_aes(color, shape, size, alpha, columns):
-    columns = list(columns)
-    color_col, color_const = parse_aes_choice(color, columns)
-    shape_col, shape_const = parse_aes_choice(shape, columns)
-    size_col, size_raw = parse_aes_choice(size, columns)
-    size_const = None
-    if size_raw is not None:
-        try:
-            size_const = float(size_raw)
-        except ValueError:
-            size_const = 10.0
-    return {
-        "color_col": color_col,
-        "color_const": color_const,
-        "shape_col": shape_col,
-        "shape_const": shape_const,
-        "size_col": size_col,
-        "size_const": size_const,
-        "alpha": float(alpha) if alpha is not None else 0.85,
-    }
-
-
-def _plotly_title(*lines: str) -> dict:
-    text = "<br>".join(line for line in lines if line is not None and str(line).strip() != "")
-    return {"text": text, "x": 0.5, "xanchor": "center"}
-
-
-def _active_dataset_name(session_blob=None, active=None) -> str:
-    if active:
-        return active if isinstance(active, str) else (active[0] if active else "dataset")
-    names = (session_blob or {}).get("active_datasets") or []
-    return str(names[0]) if names else "dataset"
 
 
 def _scatter_single(
@@ -226,26 +199,11 @@ def _umap_cols(df: pd.DataFrame) -> list[str]:
     )
 
 
-def _cache_plot_frame(score_df: pd.DataFrame) -> dict:
-    keep = _umap_cols(score_df)
-    meta_cols = [c for c in score_df.columns if c not in set(keep)]
-    slim = score_df.loc[:, keep + meta_cols].copy().reset_index(names="_sample_id")
-    return slim.to_dict(orient="list")
-
-
-def _frame_from_cache(cache: dict) -> pd.DataFrame | None:
-    if not cache or "scores" not in cache:
-        return None
-    df = pd.DataFrame(cache["scores"])
-    if "_sample_id" in df.columns:
-        df = df.set_index("_sample_id")
-    return df
-
-
 def _score_frame_for_plot(cache: dict) -> pd.DataFrame | None:
-    if "score_df" in _UMAP_RUNTIME and isinstance(_UMAP_RUNTIME["score_df"], pd.DataFrame):
-        return _UMAP_RUNTIME["score_df"]
-    return _frame_from_cache(cache)
+    if not cache:
+        return None
+    df = _UMAP_RUNTIME.get("score_df")
+    return df if isinstance(df, pd.DataFrame) else None
 
 
 class UMAPModule:
@@ -364,9 +322,8 @@ class UMAPModule:
                     className="g-2 mb-2",
                 ),
                 html.P(
-                    "Dropdowns list metadata columns first, then fixed colors/shapes/sizes. "
-                    "Legend lists color, shape, and size separately (like seaborn relplot). "
-                    "With a split column, each value gets its own aesthetics block below.",
+                    "Set color, shape, and size from metadata or a fixed value. "
+                    "A split column gives each value its own settings.",
                     className="text-muted small mb-2",
                 ),
                 html.Div(id="umap-aes-panels"),
@@ -387,14 +344,6 @@ class UMAPModule:
         )
 
     def register_callbacks(self, app: Dash) -> None:
-        def _meta_columns(session_blob, cache) -> list[str]:
-            cols = list((session_blob or {}).get("meta_columns", []))
-            if cache and "scores" in cache:
-                sample = pd.DataFrame(cache["scores"])
-                umap_like = {c for c in sample.columns if c.startswith("UMAP") and c[4:].isdigit()}
-                cols = [c for c in sample.columns if c not in umap_like and c != "_sample_id"]
-            return cols
-
         @app.callback(
             Output("umap-split-col", "options"),
             Output("umap-split-options", "data"),
@@ -402,7 +351,7 @@ class UMAPModule:
             Input("umap-cache", "data"),
         )
         def _fill_split(session_blob, cache):
-            cols = _meta_columns(session_blob, cache)
+            cols = meta_columns_from_store(session_blob)
             return [{"label": c, "value": c} for c in cols], cols
 
         @app.callback(
@@ -418,9 +367,8 @@ class UMAPModule:
             group_aes = group_aes or {}
             panels: list = []
             if split_col and cache:
-                df = _frame_from_cache(cache)
-                if df is not None and split_col in df.columns:
-                    levels = sorted(str(v) for v in df[split_col].astype(str).unique())
+                levels = meta_levels(split_col)
+                if levels:
                     for level in levels:
                         panels.append(
                             aesthetic_panel(
@@ -501,7 +449,7 @@ class UMAPModule:
                 )
                 _UMAP_RUNTIME.clear()
                 _UMAP_RUNTIME["score_df"] = score_df
-                cache = {"scores": _cache_plot_frame(score_df)}
+                cache = {"ready": True, "n": int(score_df.shape[0])}
                 coords = _umap_cols(score_df)
                 opts = [{"label": c, "value": c} for c in coords]
                 x_val = coords[0] if coords else None

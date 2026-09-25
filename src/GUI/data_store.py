@@ -157,50 +157,125 @@ class SessionData:
         return list(self.metadata.columns)
 
 
+_LIVE_SESSION: SessionData | None = None
+
+
+def active_dataset_name(session_blob=None, active=None) -> str:
+    if active:
+        return active if isinstance(active, str) else (active[0] if active else "dataset")
+    names = (session_blob or {}).get("active_datasets") or []
+    return str(names[0]) if names else "dataset"
+
+
+def session_key(session: SessionData | None) -> str | None:
+    if session is None or not session.active_datasets:
+        return None
+    return "|".join(session.active_datasets)
+
+
+def set_live_session(session: SessionData) -> None:
+    """Keep the count matrix on the server (not in the browser store)."""
+    global _LIVE_SESSION
+    _LIVE_SESSION = session
+
+
+def live_session() -> SessionData | None:
+    return _LIVE_SESSION
+
+
 def session_to_store(session: SessionData) -> dict:
-    """Serialize session for Dash dcc.Store (keeps matrices as records)."""
+    """Slim blob for Dash: columns and key only. Expression stays in ``_LIVE_SESSION``."""
+    set_live_session(session)
     if not session.ready:
         return {
             "ready": False,
             "error": session.error,
             "active_datasets": session.active_datasets,
             "meta_columns": [],
+            "key": None,
         }
-    assert session.expression is not None and session.metadata is not None
-    meta = session.metadata.copy()
-    meta.insert(0, "_sample_id", meta.index.astype(str))
+    assert session.expression is not None
     return {
         "ready": True,
         "error": None,
         "active_datasets": session.active_datasets,
         "meta_columns": session.meta_columns(),
-        "expression": {
-            "index": list(session.expression.index.astype(str)),
-            "columns": list(session.expression.columns.astype(str)),
-            "data": session.expression.to_numpy().tolist(),
-        },
-        "metadata": meta.to_dict(orient="list"),
+        "n_samples": int(session.expression.shape[0]),
+        "n_genes": int(session.expression.shape[1]),
+        "key": session_key(session),
     }
 
 
 def session_from_store(blob: dict | None) -> SessionData:
-    if not blob or not blob.get("ready"):
-        return SessionData(error=(blob or {}).get("error") or "No session data.")
-    expr_blob = blob["expression"]
-    expression = pd.DataFrame(
-        expr_blob["data"],
-        index=expr_blob["index"],
-        columns=expr_blob["columns"],
+    """Return the server-side session when the store key matches."""
+    live = _LIVE_SESSION
+    want = (blob or {}).get("key")
+    if live is not None and live.ready:
+        have = session_key(live)
+        if want is None or want == have:
+            return live
+        return SessionData(
+            error="Dataset changed — reload.",
+            active_datasets=list((blob or {}).get("active_datasets") or []),
+        )
+    return SessionData(error=(blob or {}).get("error") or "No session data.")
+
+
+def meta_columns_from_store(blob: dict | None) -> list[str]:
+    return [str(c) for c in (blob or {}).get("meta_columns") or [] if c]
+
+
+def meta_levels(col: str | None) -> list[str]:
+    session = live_session()
+    if (
+        session is None
+        or session.metadata is None
+        or not col
+        or col not in session.metadata.columns
+    ):
+        return []
+    return sorted(session.metadata[col].dropna().astype(str).unique())
+
+
+def active_dataset_entry(session_blob, project_blob) -> dict | None:
+    active = (session_blob or {}).get("active_datasets") or []
+    name = active[0] if active else None
+    if not name:
+        return None
+    return next(
+        (d for d in (project_blob or {}).get("datasets", []) if d.get("name") == name),
+        None,
     )
-    meta = pd.DataFrame(blob["metadata"])
-    if "_sample_id" in meta.columns:
-        meta = meta.set_index("_sample_id")
-    meta.index = meta.index.astype(str)
-    return SessionData(
-        expression=expression,
-        metadata=meta,
-        active_datasets=list(blob.get("active_datasets", [])),
-    )
+
+
+def locus_path_from_session(session_blob, project_blob) -> str | None:
+    entry = active_dataset_entry(session_blob, project_blob)
+    if not entry:
+        return None
+    locus = entry.get("locus_lookup") or ""
+    if not locus:
+        return None
+    root = (project_blob or {}).get("root")
+    if root and not Path(locus).is_absolute():
+        return str(Path(root) / locus)
+    return str(locus)
+
+
+def clear_analysis_runtimes() -> None:
+    """Drop PCA / HC / UMAP / gradient / volcano results from a previous dataset."""
+    from src.GUI.modules.clustering import _HC_RUNTIME
+    from src.GUI.modules.gene_gradients import _GRAD_RUNTIME
+    from src.GUI.modules.parallel_conditions import _PAR_RUNTIME
+    from src.GUI.modules.pca import _PCA_RUNTIME
+    from src.GUI.modules.umap_mod import _UMAP_RUNTIME
+    from src.GUI.modules.volcano_condition import _VC_RUNTIME
+
+    _PCA_RUNTIME.clear()
+    _HC_RUNTIME.clear()
+    _UMAP_RUNTIME.clear()
+    _GRAD_RUNTIME.clear()
+    _PAR_RUNTIME.clear()
+    _VC_RUNTIME.clear()
 
 
 def load_selected(project: Project, names: list[str]) -> SessionData:
