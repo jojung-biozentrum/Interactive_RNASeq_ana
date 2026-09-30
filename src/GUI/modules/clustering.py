@@ -26,6 +26,7 @@ from ..components.controls import (
 from ..components.gene_meta_mark import (
     entry_dropdown_options,
     gene_meta_hover_map,
+    gene_name_labels,
     genes_with_meta_entry,
     locus_mark_columns,
     mark_controls,
@@ -41,6 +42,7 @@ from ..data_store import (
     SessionData,
     active_dataset_entry as _active_dataset_entry,
     active_dataset_name as _active_dataset_name,
+    live_session,
     locus_path_from_session as _locus_path_from_session,
     meta_columns_from_store,
     session_from_store,
@@ -196,6 +198,25 @@ def _volcano_weighed_for_celov(results: pd.DataFrame, score: str) -> pd.DataFram
     )
 
 
+def _top_volcano_gene_ids(results: pd.DataFrame, score: str, mode: str, topn) -> list[str]:
+    """Top-N gene IDs using the same score/side combos as Celov export."""
+    weighed = _volcano_weighed_for_celov(results, score or "fold_change")
+    mode = (mode or "up_and_down").lower().replace(" ", "_")
+    if mode == "up":
+        weighed = weighed[weighed["gene_weight"] > 0]
+    elif mode == "down":
+        weighed = weighed[weighed["gene_weight"] < 0]
+    # up_and_down / all: both signs, ranked by |weight|
+    weighed = weighed.assign(_abs=weighed["gene_weight"].abs()).sort_values(
+        "_abs", ascending=False
+    )
+    try:
+        n = max(1, int(topn))
+    except (TypeError, ValueError):
+        n = 20
+    return list(weighed.head(n)["geneID"].astype(str))
+
+
 def _empty_bin_sel() -> dict:
     return {"a": [], "b": [], "target": "a"}
 
@@ -245,6 +266,29 @@ def _selected_clusters_banner(selected) -> html.Div:
             html.Div(_bin_badges(d["a"], "Bin A"), className="mb-1"),
             html.Div(_bin_badges(d["b"], "Bin B"), className="mb-0"),
         ]
+    )
+
+
+def _pure_cluster_status(t: int, cid: int, col: str, val: str) -> html.Div:
+    return html.Div(
+        [
+            html.Span("Pure cluster ", className="me-1"),
+            html.Span(
+                cluster_label(cid),
+                className="badge",
+                style={
+                    "backgroundColor": _cluster_color(cid),
+                    "color": "#fff",
+                    "fontSize": "1.05rem",
+                    "padding": "0.4em 0.75em",
+                },
+            ),
+            html.Span(
+                f" at {t} clusters for {col}={val!r}.",
+                className="ms-1",
+            ),
+        ],
+        className="mb-0",
     )
 
 
@@ -341,6 +385,7 @@ def _gene_distance_fig(rt: dict, *, dataset: str, t: int) -> go.Figure:
         title=_heatmap_title("gg", dataset, t),
         xaxis_title="Genes",
         yaxis_title="Genes",
+        label_map=gene_name_labels(rt.get("locus_lookup")),
     )
 
 
@@ -358,6 +403,7 @@ def _sample_gene_fig(rt: dict, sample_labels: np.ndarray, *, dataset: str, t: in
         row_leaf_clusters=leaf_c,
         xaxis_title="Genes",
         yaxis_title="Samples",
+        label_map=gene_name_labels(rt.get("locus_lookup")),
     )
 
 
@@ -365,7 +411,7 @@ class ClusteringModule:
     id = "hc"
     label = "Hierarchical clustering"
 
-    def layout(self):
+    def level1(self):
         return html.Div(
             [
                 dbc.Row(
@@ -460,7 +506,7 @@ class ClusteringModule:
                             ],
                             className="g-2 mb-2",
                         ),
-                        html.Div(id="hc-homo-status", className="text-muted small mb-2"),
+                        html.Div(id="hc-homo-status", className="mb-2"),
                         dcc.Store(id="hc-maxclust-applied", data=2),
                     ],
                 ),
@@ -574,11 +620,11 @@ class ClusteringModule:
                                         html.Label("Bin A alpha"),
                                         dcc.Slider(
                                             id="hc-pca-alpha-a",
-                                            min=0.05,
+                                            min=0,
                                             max=1.0,
                                             step=0.05,
                                             value=1.0,
-                                            marks={0.05: "0.05", 0.5: "0.5", 1.0: "1"},
+                                            marks={0: "0", 0.5: "0.5", 1.0: "1"},
                                         ),
                                     ],
                                     md=3,
@@ -588,11 +634,11 @@ class ClusteringModule:
                                         html.Label("Bin B alpha"),
                                         dcc.Slider(
                                             id="hc-pca-alpha-b",
-                                            min=0.05,
+                                            min=0,
                                             max=1.0,
                                             step=0.05,
                                             value=1.0,
-                                            marks={0.05: "0.05", 0.5: "0.5", 1.0: "1"},
+                                            marks={0: "0", 0.5: "0.5", 1.0: "1"},
                                         ),
                                     ],
                                     md=3,
@@ -701,203 +747,259 @@ class ClusteringModule:
                             ],
                             className="g-2 mb-2",
                         ),
-                        html.Hr(),
-                        html.H6("Cluster contrast volcano"),
-                        dbc.Row(
-                            [
-                                dbc.Col(
-                                    [
-                                        html.Label("Difference"),
-                                        dcc.Dropdown(
-                                            id="hc-volcano-center",
-                                            options=[
-                                                {
-                                                    "label": "means",
-                                                    "value": "mean",
-                                                },
-                                                {
-                                                    "label": "medians",
-                                                    "value": "median",
-                                                },
-                                            ],
-                                            value="mean",
-                                            clearable=False,
-                                        ),
-                                    ],
-                                    md=3,
-                                ),
-                                dbc.Col(
-                                    [
-                                        html.Label("−log10(padj) threshold"),
-                                        dbc.Input(
-                                            id="hc-volcano-padj",
-                                            type="number",
-                                            value=2,
-                                            step=0.1,
-                                        ),
-                                    ],
-                                    md=2,
-                                ),
-                                dbc.Col(
-                                    [
-                                        html.Label("|fold change| threshold"),
-                                        dbc.Input(
-                                            id="hc-volcano-fc",
-                                            type="number",
-                                            value=1,
-                                            step=0.1,
-                                        ),
-                                    ],
-                                    md=2,
-                                ),
-                                dbc.Col(
-                                    [
-                                        html.Br(),
-                                        dbc.Button(
-                                            "Run volcano",
-                                            id="hc-volcano-run",
-                                            color="primary",
-                                        ),
-                                    ],
-                                    md=2,
-                                ),
-                            ],
-                            className="g-2 mb-2",
-                        ),
-                        html.Div(id="hc-volcano-status", className="text-muted small mb-2"),
-                        mark_controls(
-                            col_id="hc-volcano-mark-col",
-                            entry_id="hc-volcano-mark-entry",
-                            wrap_id="hc-volcano-mark-wrap",
-                        ),
-                        fig_size_controls(
-                            "hc-volcano",
-                            default_width=640,
-                            default_height=520,
-                        ),
-                        dcc.Loading(
-                            dbc.Row(
-                                [
-                                    dbc.Col(
-                                        dcc.Graph(
-                                            id="hc-volcano",
-                                            figure={},
-                                            config=_GRAPH_CONFIG,
-                                        ),
-                                        md=8,
-                                    ),
-                                    dbc.Col(
-                                        html.Div(
-                                            [
-                                                html.H6("Gene metadata", className="mb-2"),
-                                                html.P(
-                                                    "Click a gene on the volcano plot.",
-                                                    className="text-muted small mb-2",
-                                                ),
-                                                html.Div(
-                                                    id="hc-volcano-gene-detail",
-                                                    children=gene_detail_placeholder(),
-                                                ),
-                                            ],
-                                            className="border rounded p-2 bg-light",
-                                        ),
-                                        md=4,
-                                    ),
-                                ],
-                                className="g-2 align-items-start",
-                            ),
-                            type="default",
-                        ),
-                        dcc.Store(id="hc-volcano-last-gene", data=None),
-                        html.H6("Save volcano genes (Celov)", className="mt-3"),
-                        dbc.Row(
-                            [
-                                dbc.Col(
-                                    [
-                                        html.Label("Score"),
-                                        dcc.Dropdown(
-                                            id="hc-volcano-celov-score",
-                                            options=[
-                                                {
-                                                    "label": "expression difference",
-                                                    "value": "fold_change",
-                                                },
-                                                {
-                                                    "label": "−log10(padj)",
-                                                    "value": "neg_log10_padj",
-                                                },
-                                                {
-                                                    "label": "product of both",
-                                                    "value": "product",
-                                                },
-                                            ],
-                                            value="fold_change",
-                                            clearable=False,
-                                        ),
-                                    ],
-                                    md=3,
-                                ),
-                                dbc.Col(
-                                    [
-                                        html.Label("Genes"),
-                                        dcc.RadioItems(
-                                            id="hc-volcano-celov-mode",
-                                            options=[
-                                                {
-                                                    "label": "up & down",
-                                                    "value": "up_and_down",
-                                                },
-                                                {"label": "up", "value": "up"},
-                                                {"label": "down", "value": "down"},
-                                                {
-                                                    "label": "all together",
-                                                    "value": "all",
-                                                },
-                                            ],
-                                            value="up_and_down",
-                                            inline=True,
-                                        ),
-                                    ],
-                                    md=4,
-                                ),
-                                dbc.Col(
-                                    [
-                                        html.Label("Output path ({} = type)"),
-                                        dbc.InputGroup(
-                                            [
-                                                dbc.Input(
-                                                    id="hc-volcano-celov-out", type="text"
-                                                ),
-                                                dbc.Button(
-                                                    "Browse…",
-                                                    id="hc-volcano-celov-browse",
-                                                    color="info",
-                                                    outline=True,
-                                                ),
-                                            ]
-                                        ),
-                                    ],
-                                    md=4,
-                                ),
-                            ],
-                            className="g-2 mb-2",
-                        ),
-                        dbc.Button(
-                            "Save Celov",
-                            id="hc-volcano-celov-save",
-                            color="secondary",
-                            className="mb-2",
-                        ),
-                        html.Div(
-                            id="hc-volcano-celov-status",
-                            className="text-muted small mb-2",
-                        ),
                         dcc.Store(id="hc-cluster-sel", data=_empty_bin_sel()),
                     ],
                 ),
                 dcc.Store(id="hc-cache"),
             ]
         )
+
+    def level2(self):
+        return html.Div(
+            [
+                html.P(
+                    "Assign dendrogram clusters to Bin A / Bin B in Samples, then run the contrast here.",
+                    className="text-muted small",
+                ),
+                html.H6("Cluster contrast volcano"),
+                dbc.Row(
+                    [
+                        dbc.Col(
+                            [
+                                html.Label("Difference"),
+                                dcc.Dropdown(
+                                    id="hc-volcano-center",
+                                    options=[
+                                        {
+                                            "label": "means",
+                                            "value": "mean",
+                                        },
+                                        {
+                                            "label": "medians",
+                                            "value": "median",
+                                        },
+                                    ],
+                                    value="mean",
+                                    clearable=False,
+                                ),
+                            ],
+                            md=3,
+                        ),
+                        dbc.Col(
+                            [
+                                html.Label("−log10(padj) threshold"),
+                                dbc.Input(
+                                    id="hc-volcano-padj",
+                                    type="number",
+                                    value=2,
+                                    step=0.1,
+                                ),
+                            ],
+                            md=2,
+                        ),
+                        dbc.Col(
+                            [
+                                html.Label("|fold change| threshold"),
+                                dbc.Input(
+                                    id="hc-volcano-fc",
+                                    type="number",
+                                    value=1,
+                                    step=0.1,
+                                ),
+                            ],
+                            md=2,
+                        ),
+                        dbc.Col(
+                            [
+                                html.Br(),
+                                dbc.Button(
+                                    "Run volcano",
+                                    id="hc-volcano-run",
+                                    color="primary",
+                                ),
+                            ],
+                            md=2,
+                        ),
+                    ],
+                    className="g-2 mb-2",
+                ),
+                html.Div(id="hc-volcano-status", className="text-muted small mb-2"),
+                mark_controls(
+                    col_id="hc-volcano-mark-col",
+                    entry_id="hc-volcano-mark-entry",
+                    wrap_id="hc-volcano-mark-wrap",
+                ),
+                fig_size_controls(
+                    "hc-volcano",
+                    default_width=640,
+                    default_height=520,
+                ),
+                dcc.Loading(
+                    dbc.Row(
+                        [
+                            dbc.Col(
+                                dcc.Graph(
+                                    id="hc-volcano",
+                                    figure={},
+                                    config=_GRAPH_CONFIG,
+                                ),
+                                md=8,
+                            ),
+                            dbc.Col(
+                                html.Div(
+                                    [
+                                        html.H6("Gene metadata", className="mb-2"),
+                                        html.P(
+                                            "Click a gene on the volcano plot.",
+                                            className="text-muted small mb-2",
+                                        ),
+                                        html.Div(
+                                            id="hc-volcano-gene-detail",
+                                            children=gene_detail_placeholder(),
+                                        ),
+                                    ],
+                                    className="border rounded p-2 bg-light",
+                                ),
+                                md=4,
+                            ),
+                        ],
+                        className="g-2 align-items-start",
+                    ),
+                    type="default",
+                ),
+                dcc.Store(id="hc-volcano-last-gene", data=None),
+                html.H6("Save volcano genes (Celov)", className="mt-3"),
+                dbc.Row(
+                    [
+                        dbc.Col(
+                            [
+                                html.Label("Score"),
+                                dcc.Dropdown(
+                                    id="hc-volcano-celov-score",
+                                    options=[
+                                        {
+                                            "label": "expression difference",
+                                            "value": "fold_change",
+                                        },
+                                        {
+                                            "label": "−log10(padj)",
+                                            "value": "neg_log10_padj",
+                                        },
+                                        {
+                                            "label": "product of both",
+                                            "value": "product",
+                                        },
+                                    ],
+                                    value="fold_change",
+                                    clearable=False,
+                                ),
+                            ],
+                            md=3,
+                        ),
+                        dbc.Col(
+                            [
+                                html.Label("Genes"),
+                                dcc.RadioItems(
+                                    id="hc-volcano-celov-mode",
+                                    options=[
+                                        {
+                                            "label": "up & down",
+                                            "value": "up_and_down",
+                                        },
+                                        {"label": "up", "value": "up"},
+                                        {"label": "down", "value": "down"},
+                                        {
+                                            "label": "all together",
+                                            "value": "all",
+                                        },
+                                    ],
+                                    value="up_and_down",
+                                    inline=True,
+                                ),
+                            ],
+                            md=4,
+                        ),
+                        dbc.Col(
+                            [
+                                html.Label("Output path ({} = type)"),
+                                dbc.InputGroup(
+                                    [
+                                        dbc.Input(
+                                            id="hc-volcano-celov-out", type="text"
+                                        ),
+                                        dbc.Button(
+                                            "Browse…",
+                                            id="hc-volcano-celov-browse",
+                                            color="info",
+                                            outline=True,
+                                        ),
+                                    ]
+                                ),
+                            ],
+                            md=4,
+                        ),
+                    ],
+                    className="g-2 mb-2",
+                ),
+                dbc.Button(
+                    "Save Celov",
+                    id="hc-volcano-celov-save",
+                    color="secondary",
+                    className="mb-2",
+                ),
+                html.Div(
+                    id="hc-volcano-celov-status",
+                    className="text-muted small mb-2",
+                ),
+                html.Hr(),
+                html.H6("Gene expression PCA"),
+                html.P(
+                    "PCA on samples using the top N volcano genes (same score and "
+                    "up / down / up&down / all options as Celov). Colored by HC cluster.",
+                    className="text-muted small",
+                ),
+                dbc.Row(
+                    [
+                        dbc.Col(
+                            [
+                                html.Label("Top N"),
+                                dbc.Input(
+                                    id="hc-gene-pca-topn",
+                                    type="number",
+                                    value=20,
+                                    min=2,
+                                    step=1,
+                                ),
+                            ],
+                            md=2,
+                        ),
+                        dbc.Col(
+                            [
+                                html.Br(),
+                                dbc.Button(
+                                    "Plot gene PCA",
+                                    id="hc-gene-pca-run",
+                                    color="primary",
+                                ),
+                            ],
+                            md=3,
+                        ),
+                    ],
+                    className="g-2 mb-2",
+                ),
+                html.Div(id="hc-gene-pca-status", className="text-muted small mb-2"),
+                fig_size_controls(
+                    "hc-gene-pca",
+                    default_width=EXPORT_W,
+                    default_height=EXPORT_H,
+                ),
+                dcc.Graph(id="hc-gene-pca-fig", figure={}, config=_GRAPH_CONFIG),
+                dcc.Store(id="hc-gene-pca-genes", data=[]),
+            ]
+        )
+
+    def layout(self):
+        return html.Div([self.level1(), self.level2()])
 
     def register_callbacks(self, app: Dash) -> None:
         @app.callback(
@@ -971,6 +1073,7 @@ class ClusteringModule:
                     locus_note = " (no locus lookup on dataset)"
                 _HC_RUNTIME.clear()
                 _HC_RUNTIME.update(rt)
+                _HC_RUNTIME["t_use"] = 2
                 pcs = [c for c in rt["score_df"].columns if c.startswith("PC") and c[2:].isdigit()]
                 opts = [{"label": c, "value": c} for c in pcs]
                 cache = {
@@ -1020,6 +1123,8 @@ class ClusteringModule:
                 return no_update, "Run clustering first."
             n = _HC_RUNTIME["n_samples"]
             t_use = max(2, min(int(t or 2), n))
+            _HC_RUNTIME["t_use"] = t_use
+            _HC_RUNTIME.pop("pure_cid", None)
             return t_use, f"Colored clusters at total number of clusters = {t_use}."
 
         @app.callback(
@@ -1043,11 +1148,14 @@ class ClusteringModule:
                 _HC_RUNTIME["Z_samples"], score_df[col], str(val)
             )
             if t is None:
+                _HC_RUNTIME.pop("pure_cid", None)
                 return no_update, no_update, f"No pure cluster step found for {col}={val!r}."
+            _HC_RUNTIME["t_use"] = t
+            _HC_RUNTIME["pure_cid"] = int(cid)
             return (
                 t,
                 t,
-                f"Step t = {t} (first pure cluster {cid}) for {col}={val!r} — clusters colored.",
+                _pure_cluster_status(t, int(cid), str(col), str(val)),
             )
 
         @app.callback(
@@ -1130,6 +1238,15 @@ class ClusteringModule:
             if triggered in ("hc-volcano-clear", "hc-maxclust-applied", "hc-cache"):
                 empty = _empty_bin_sel()
                 empty["target"] = "b" if bin_target == "b" else "a"
+                if triggered == "hc-maxclust-applied":
+                    cid = _HC_RUNTIME.get("pure_cid")
+                    if cid is not None:
+                        empty["a"] = [int(cid)]
+                        return (
+                            empty,
+                            f"Pure cluster {cluster_label(int(cid))} assigned to Bin A.",
+                            _selected_clusters_banner(empty),
+                        )
                 return (
                     empty,
                     "Assign clusters to Bin A and Bin B via the dendrogram.",
@@ -1589,6 +1706,82 @@ class ClusteringModule:
                 return "Saved Celov: " + ", ".join(str(p) for p in paths)
             except Exception as exc:  # noqa: BLE001
                 return f"Celov save error: {exc}"
+
+        @app.callback(
+            Output("hc-gene-pca-fig", "figure"),
+            Output("hc-gene-pca-status", "children"),
+            Output("hc-gene-pca-genes", "data"),
+            Output("analysis-selected-genes", "data", allow_duplicate=True),
+            Input("hc-gene-pca-run", "n_clicks"),
+            Input("hc-gene-pca-fig-w", "value"),
+            Input("hc-gene-pca-fig-h", "value"),
+            State("hc-volcano-celov-score", "value"),
+            State("hc-volcano-celov-mode", "value"),
+            State("hc-gene-pca-topn", "value"),
+            State("hc-maxclust-applied", "data"),
+            State("hc-cluster-sel", "data"),
+            prevent_initial_call=True,
+        )
+        def _gene_pca(n_clicks, fig_w, fig_h, score, mode, topn, t, selected):
+            empty = go.Figure()
+            results = _HC_RUNTIME.get("volcano_results")
+            if results is None or not isinstance(results, pd.DataFrame) or results.empty:
+                return empty, "Run volcano first.", [], no_update
+            if "Z_samples" not in _HC_RUNTIME:
+                return empty, "Run clustering first.", [], no_update
+            session = live_session()
+            if session is None or session.expression is None:
+                return empty, "Load a dataset first.", [], no_update
+            genes = _top_volcano_gene_ids(results, score or "fold_change", mode, topn)
+            expr = session.expression
+            genes = [g for g in genes if g in expr.columns]
+            if len(genes) < 2:
+                return empty, "Need at least 2 genes present in the expression matrix.", [], no_update
+            # samples × genes (same orientation as session); drop incomplete rows
+            X = expr[genes].apply(pd.to_numeric, errors="coerce").dropna(axis=0, how="any")
+            if len(X) < 3:
+                return empty, "Too few complete samples for gene PCA.", genes, no_update
+            pca = PCA()
+            scores = pca.fit_transform(np.asarray(X, dtype=float))
+            score_df = pd.DataFrame(
+                scores[:, :2],
+                index=X.index.astype(str),
+                columns=["PC1", "PC2"],
+            )
+            meta = _HC_RUNTIME.get("score_df")
+            if isinstance(meta, pd.DataFrame):
+                keep = [c for c in meta.columns if c not in score_df.columns]
+                score_df = score_df.join(meta[keep], how="left")
+            n = _HC_RUNTIME["n_samples"]
+            t_use = max(2, min(int(t or _HC_RUNTIME.get("t_use") or 2), n))
+            labels_all = _cut_clusters(_HC_RUNTIME["Z_samples"], t_use)
+            id_to_lab = {
+                str(sid): int(lab)
+                for sid, lab in zip(_HC_RUNTIME["sample_ids"], labels_all)
+            }
+            cluster_labels = np.array(
+                [id_to_lab.get(str(i), -1) for i in score_df.index], dtype=int
+            )
+            bins = _normalize_bin_sel(selected)
+            fig = pca_cluster_fig(
+                score_df,
+                cluster_labels,
+                "PC1",
+                "PC2",
+                bin_a=bins["a"],
+                bin_b=bins["b"],
+                title=_plotly_title(
+                    f"Gene expression PCA (top {len(genes)} volcano genes)",
+                    f"score={score or 'fold_change'}, mode={mode or 'up_and_down'}",
+                ),
+            )
+            fig = set_fig_size(fig, fig_w, fig_h)
+            msg = (
+                f"PCA on {len(X)} samples × {len(genes)} genes "
+                f"(PC1 {100 * float(pca.explained_variance_ratio_[0]):.1f}%, "
+                f"PC2 {100 * float(pca.explained_variance_ratio_[1]):.1f}%)."
+            )
+            return fig, msg, genes, genes
 
         @app.callback(
             Output("hc-export-path", "value"),

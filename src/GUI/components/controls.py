@@ -24,7 +24,7 @@ _ID_PRIORITY = (
     "biocyc_id",
 )
 
-_COORD_PREFIXES = ("PC", "UMAP")
+_COORD_PREFIXES = ("PC",)
 _COORD_EXACT = {"x", "y", "z", "hover_name", "abs_gene_weight"}
 
 # Dropdown value prefixes
@@ -278,7 +278,7 @@ def resolve_aes(color, shape, size, alpha, columns) -> dict:
         "shape_const": shape_const,
         "size_col": size_col,
         "size_const": size_const,
-        "alpha": float(alpha) if alpha is not None else 0.85,
+        "alpha": float(np.clip(float(alpha) if alpha is not None else 0.85, 0.0, 1.0)),
     }
 
 
@@ -386,11 +386,11 @@ def aesthetic_panel(
                         html.Label("Alpha"),
                         dcc.Slider(
                             id=pid("alpha"),
-                            min=0.1,
+                            min=0,
                             max=1.0,
                             step=0.05,
                             value=float(values.get("alpha", 0.85)),
-                            marks={0.1: "0.1", 0.5: "0.5", 1.0: "1"},
+                            marks={0: "0", 0.5: "0.5", 1.0: "1"},
                         ),
                     ],
                     md=3,
@@ -660,6 +660,7 @@ def build_scatter(
     """Build 2D/3D scatter; 2D legends list color, shape, and size separately."""
     plot_df, hover_name, _hover_cols = prepare_hover_frame(df, id_col=hover_name)
     columns = list(plot_df.columns)
+    alpha = float(np.clip(alpha if alpha is not None else 0.85, 0.0, 1.0))
 
     use_color_col = color_col if color_col in columns else None
     use_shape_col = shape_col if shape_col in columns else None

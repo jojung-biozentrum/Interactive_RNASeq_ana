@@ -137,6 +137,7 @@ def heatmap_with_dendro(
     col_leaf_clusters: list[int] | None = None,
     xaxis_title: str | None = None,
     yaxis_title: str | None = None,
+    label_map: dict[str, str] | None = None,
 ) -> go.Figure:
     """Viridis heatmap; axis dendrograms aligned to cells (scipy coords scaled)."""
     n_row, n_col = z.shape
@@ -149,12 +150,19 @@ def heatmap_with_dendro(
         z = z[:, col_order]
         col_labels = [col_labels[i] for i in col_order]
 
+    names = label_map or {}
+
+    def _hover_id(x) -> str:
+        s = str(x)
+        extra = names.get(s) or names.get(s.strip())
+        return f"{s} ({extra})" if extra else s
+
     custom = np.empty(z.shape, dtype=object)
     text_hover = np.empty(z.shape, dtype=object)
     for i, r in enumerate(row_labels):
         for j, c in enumerate(col_labels):
             custom[i, j] = f"{r}||{c}"
-            text_hover[i, j] = f"row: {r}<br>col: {c}"
+            text_hover[i, j] = f"row: {_hover_id(r)}<br>col: {_hover_id(c)}"
 
     has_row = Z_row is not None
     has_col = Z_col is not None
@@ -388,8 +396,8 @@ def pca_cluster_fig(
     set_a = {str(int(c)) for c in (bin_a or [])}
     set_b = {str(int(c)) for c in (bin_b or [])}
     sel = {str(int(c)) for c in (selected or [])} or (set_a | set_b)
-    opa_a = float(np.clip(alpha_a if alpha_a is not None else 1.0, 0.05, 1.0))
-    opa_b = float(np.clip(alpha_b if alpha_b is not None else 1.0, 0.05, 1.0))
+    opa_a = float(np.clip(alpha_a if alpha_a is not None else 1.0, 0.0, 1.0))
+    opa_b = float(np.clip(alpha_b if alpha_b is not None else 1.0, 0.0, 1.0))
     for tr in fig.data:
         name = str(tr.name) if tr.name is not None else ""
         if name in set_a:

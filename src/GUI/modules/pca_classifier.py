@@ -50,6 +50,22 @@ def fit_pc_classifier(df: pd.DataFrame, y: np.ndarray, n_pcs: int) -> dict | Non
     }
 
 
+def classifier_axis_scores(
+    score_df: pd.DataFrame,
+    coef,
+    n_pcs: int,
+    name: str = "Linear classifier",
+) -> pd.Series:
+    """Project samples onto the fitted logistic direction: ``X[:, :n] @ w``."""
+    pc_cols = [f"PC{i}" for i in range(1, int(n_pcs) + 1)]
+    missing = [c for c in pc_cols if c not in score_df.columns]
+    if missing:
+        raise ValueError(f"Missing PCs for classifier axis: {missing}")
+    w = np.asarray(coef, dtype=float).ravel()[: int(n_pcs)]
+    X = score_df[pc_cols].to_numpy(dtype=float)
+    return pd.Series(X @ w, index=score_df.index, name=name)
+
+
 def encode_binary_labels(series: pd.Series, positive: str) -> np.ndarray:
     """Map label column to 0/1 with ``positive`` as class 1 (notebook Biofilm.astype(int))."""
     s = series.astype(str)
@@ -79,7 +95,12 @@ def classifier_performance(
     return pd.DataFrame(rows)
 
 
-def performance_figure(perf_df: pd.DataFrame, title: str | dict) -> go.Figure:
+def performance_figure(
+    perf_df: pd.DataFrame,
+    title: str | dict,
+    ari_df: pd.DataFrame | None = None,
+) -> go.Figure:
+    """Accuracy vs n PCs; optional per-PC class ARI on a right-hand axis."""
     fig = go.Figure()
     if perf_df is None or perf_df.empty:
         fig.add_annotation(text="No classifier results", showarrow=False)
@@ -102,25 +123,63 @@ def performance_figure(perf_df: pd.DataFrame, title: str | dict) -> go.Figure:
             opacity=0.7,
         )
     )
+    has_ari = (
+        ari_df is not None
+        and not ari_df.empty
+        and "PC" in ari_df.columns
+        and "ARI" in ari_df.columns
+    )
+    if has_ari:
+        fig.add_trace(
+            go.Scatter(
+                x=ari_df["PC"],
+                y=ari_df["ARI"],
+                mode="lines+markers",
+                name="ARI (class end-split)",
+                yaxis="y2",
+                line=dict(color="#2ca02c"),
+                marker=dict(symbol="diamond"),
+            )
+        )
     title_dict = (
         title
         if isinstance(title, dict)
         else {"text": title, "x": 0.5, "xanchor": "center"}
     )
     title_lines = str(title_dict.get("text", "")).count("<br>") + 1
-    fig.update_layout(
-        title=title_dict,
-        xaxis_title="Number of PCs",
-        yaxis_title="Accuracy",
-        xaxis=dict(tickmode="linear", dtick=1),
-    )
-    # Same outer size as PCA (not full-page wide); legend outside to the right
+    x_vals = list(perf_df["n_pcs"].astype(float))
+    if has_ari:
+        x_vals.extend(list(ari_df["PC"].astype(float)))
+    x_min = int(min(x_vals)) if x_vals else 1
+    x_max = int(max(x_vals)) if x_vals else 1
+    layout_kwargs: dict = {
+        "title": title_dict,
+        "xaxis_title": "Number of PCs / PC",
+        "yaxis_title": "Accuracy",
+        "xaxis": dict(tickmode="linear", dtick=1, range=[x_min - 0.5, x_max + 0.5]),
+        "yaxis": dict(range=[-0.02, 1.05]),
+    }
+    if has_ari:
+        ari_min = float(np.nanmin(ari_df["ARI"].to_numpy(dtype=float)))
+        ari_lo = min(ari_min, 0.0) if np.isfinite(ari_min) else 0.0
+        layout_kwargs["yaxis2"] = dict(
+            title="ARI",
+            overlaying="y",
+            side="right",
+            range=[ari_lo, 1.05],
+            showgrid=False,
+        )
+    fig.update_layout(**layout_kwargs)
+    # Same outer size as PCA; legend outside — shift right when ARI axis is present
     apply_export_layout(
         fig,
         title_lines=title_lines,
         legend=True,
+        legend_kwargs={"x": 1.14} if has_ari else None,
         uirevision="pca-clf-perf",
     )
+    if has_ari:
+        fig.update_layout(margin=dict(r=max(int(fig.layout.margin.r or 160), 200)))
     return fig
 
 

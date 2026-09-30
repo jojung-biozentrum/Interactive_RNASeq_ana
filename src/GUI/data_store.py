@@ -262,17 +262,15 @@ def locus_path_from_session(session_blob, project_blob) -> str | None:
 
 
 def clear_analysis_runtimes() -> None:
-    """Drop PCA / HC / UMAP / gradient / volcano results from a previous dataset."""
+    """Drop PCA / HC / gradient / volcano results from a previous dataset."""
     from src.GUI.modules.clustering import _HC_RUNTIME
     from src.GUI.modules.gene_gradients import _GRAD_RUNTIME
     from src.GUI.modules.parallel_conditions import _PAR_RUNTIME
     from src.GUI.modules.pca import _PCA_RUNTIME
-    from src.GUI.modules.umap_mod import _UMAP_RUNTIME
     from src.GUI.modules.volcano_condition import _VC_RUNTIME
 
     _PCA_RUNTIME.clear()
     _HC_RUNTIME.clear()
-    _UMAP_RUNTIME.clear()
     _GRAD_RUNTIME.clear()
     _PAR_RUNTIME.clear()
     _VC_RUNTIME.clear()

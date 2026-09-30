@@ -780,9 +780,9 @@ def _measure_col(method: str) -> dbc.Col:
 
 class GeneGradientsModule:
     id = "gene-gradients"
-    label = "Gene gradients"
+    label = "Spatial gradient"
 
-    def layout(self):
+    def level1(self):
         return html.Div(
             [
                 html.P(
@@ -1006,10 +1006,18 @@ class GeneGradientsModule:
                 ),
                 dbc.Button("Save Celov", id="grad-celov-save", color="secondary", className="mb-2"),
                 html.Div(id="grad-celov-status", className="text-muted small mb-2"),
-                html.Hr(),
+                dcc.Store(id="grad-cache"),
+                dcc.Store(id="grad-last-gene", data=None),
+            ]
+        )
+
+    def level2(self):
+        return html.Div(
+            [
                 html.H6("Clicked gene profiles"),
                 html.P(
-                    "Click a gene on any gradient or pairwise plot (click again to remove). "
+                    "Click a gene on a gradient or pairwise plot in Samples "
+                    "(click again to remove). "
                     f"Up to {_PROFILE_COLS} per row, {_MAX_PROFILE_GENES // _PROFILE_COLS} rows "
                     f"(max {_MAX_PROFILE_GENES}).",
                     className="text-muted small",
@@ -1024,11 +1032,15 @@ class GeneGradientsModule:
                 ),
                 html.Div(id="grad-profiles-status", className="text-muted small mb-1"),
                 dcc.Graph(id="grad-profiles-grid", figure={}, config=_GRAPH_CONFIG),
-                dcc.Store(id="grad-cache"),
                 dcc.Store(id="grad-selected-genes", data=[]),
-                dcc.Store(id="grad-last-gene", data=None),
             ]
         )
+
+    def level3(self):
+        return html.Div()
+
+    def layout(self):
+        return html.Div([self.level1(), self.level2(), self.level3()])
 
     def register_callbacks(self, app: Dash) -> None:
         @app.callback(

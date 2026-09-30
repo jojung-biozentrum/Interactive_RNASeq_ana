@@ -6,7 +6,7 @@ from dash import Dash, Input, Output, dcc, html
 import dash_bootstrap_components as dbc
 import pandas as pd
 
-_COORD_PREFIXES = ("PC", "UMAP")
+_COORD_PREFIXES = ("PC",)
 
 
 def _is_coord_col(name: str) -> bool:

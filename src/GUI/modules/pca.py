@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import math
 
 from dash import ALL, Dash, Input, Output, State, callback_context, dcc, html, no_update
 import dash_bootstrap_components as dbc
@@ -41,25 +42,23 @@ from ..data_store import (
     session_from_store,
 )
 from .condition_enrichment import (
-    DEFAULT_CAT_COLS,
-    DEFAULT_NUM_COLS,
-    ari_figure,
-    biofilm_axis_scores,
     cat_entry_mats,
     corr_vs_axes,
     heatmap_matrix_fig,
     pc_separation_ari,
-    present_cols,
 )
 from .pca_classifier import (
     add_decision_boundary,
     build_weighed_genes,
+    classifier_axis_scores,
     classifier_performance,
     encode_binary_labels,
     fit_pc_classifier,
     performance_figure,
     save_classifier_celov,
 )
+from .volcano_condition import volcano_passing_gene_ids
+from .workspace_enrichment import CLF_AXIS
 
 _AES_ALL = "__all__"
 _AES_PREFIX = "pca-aes"
@@ -77,6 +76,7 @@ _DEFAULT_AES = {
 # Server-side PCA result (full scores / loadings) — local single-user app
 _PCA_RUNTIME: dict = {}
 _GENE_BY_ID = "__geneID__"
+_EXPR_COLS = 4
 
 
 def _run_pca(session: SessionData):
@@ -352,11 +352,45 @@ def _top_weighed(weighed: pd.DataFrame, n, side: str | None) -> pd.DataFrame:
     return w.head(n_keep)
 
 
+def _ranked_expr_gene_ids(source, pc, topn, side, clf_cache) -> tuple[list[str], dict[str, float]]:
+    ranked: list[str] = []
+    weights: dict[str, float] = {}
+    if source == "clf":
+        if clf_cache and clf_cache.get("w_gene") and "loadings" in _PCA_RUNTIME:
+            try:
+                n_pcs = int(clf_cache.get("gene_pcs") or 5)
+                weighed = build_weighed_genes(
+                    _PCA_RUNTIME["loadings"],
+                    _PCA_RUNTIME["explained_variance"],
+                    np.asarray(clf_cache["w_gene"], dtype=float),
+                    n_pcs,
+                )
+                top = _top_weighed(weighed, topn, side)
+                ranked = list(top["geneID"].astype(str))
+                weights = dict(
+                    zip(top["geneID"].astype(str), top["gene_weight"].astype(float))
+                )
+            except Exception:  # noqa: BLE001
+                ranked = []
+    elif pc and "loadings" in _PCA_RUNTIME:
+        try:
+            weighed = weighed_genes_from_pc(_PCA_RUNTIME["loadings"], str(pc))
+            top = _top_weighed(weighed, topn, side)
+            ranked = list(top["geneID"].astype(str))
+            weights = dict(
+                zip(top["geneID"].astype(str), top["gene_weight"].astype(float))
+            )
+        except Exception:  # noqa: BLE001
+            ranked = []
+    return ranked, weights
+
+
 def _gene_expr_picker(prefix: str, *, from_weights: bool) -> html.Div:
     """Select-by + gene dropdown (+ top-N weights) and viridis PCA plot."""
     blurb = (
-        "Pick genes from the top weights (gene ID or name). Shown: expression on "
-        "the current PC axes, one panel per gene."
+        "Pick genes from the top weights (gene ID or name), or take genes that pass "
+        "the volcano fold-change / padj lines. Shown: expression on the current PC "
+        "axes, one panel per gene."
         if from_weights
         else "Pick genes by gene ID or name. Shown: expression on the current PC "
         "axes, one panel per gene."
@@ -415,58 +449,6 @@ def _gene_expr_picker(prefix: str, *, from_weights: bool) -> html.Div:
                 graph_config=_GRAPH_CONFIG,
             ),
             html.Div(id=f"{prefix}-status", className="text-muted small mb-2"),
-            html.H6("Condition enrichment on gene profile", className="mt-3"),
-            html.P(
-                "Uses the selected genes' raw expression as the profile. "
-                "Rankable: Pearson / Spearman vs that profile. Categorical: "
-                "within-entry variance and distance on that profile.",
-                className="text-muted small",
-            ),
-            dbc.Row(
-                [
-                    dbc.Col(
-                        [
-                            html.Label("Columns"),
-                            dcc.RadioItems(
-                                id=f"{prefix}-enr-kind",
-                                options=[
-                                    {"label": " categorical", "value": "cat"},
-                                    {"label": " rankable", "value": "rank"},
-                                ],
-                                value="cat",
-                                inline=True,
-                            ),
-                        ],
-                        md=3,
-                    ),
-                    dbc.Col(
-                        [
-                            html.Label("Metadata columns"),
-                            dcc.Dropdown(id=f"{prefix}-enr-cols", multi=True),
-                        ],
-                        md=4,
-                    ),
-                    dbc.Col(
-                        [
-                            html.Label("Axis label"),
-                            dcc.Dropdown(id=f"{prefix}-enr-label", clearable=True),
-                        ],
-                        md=3,
-                    ),
-                    dbc.Col(
-                        dbc.Button(
-                            "Run enrichment",
-                            id=f"{prefix}-enr-run",
-                            color="secondary",
-                            className="mt-4",
-                        ),
-                        md=2,
-                    ),
-                ],
-                className="g-2 mb-2",
-            ),
-            dcc.Graph(id=f"{prefix}-enr-fig", figure={}, config=_GRAPH_CONFIG),
-            html.Div(id=f"{prefix}-enr-status", className="text-muted small mb-2"),
         ]
     )
 
@@ -504,10 +486,14 @@ def _render_gene_expr_plot(genes, lookup, by_col, x_col, y_col, cache, fig_w, fi
             score_df, expr, genes, x_col or "PC1", y_col or "PC2", var, titles=titles
         )
         n = max(1, len(genes))
+        n_cols = min(_EXPR_COLS, n)
+        n_rows = int(math.ceil(n / n_cols))
+        w = int(fig_w) if fig_w else EXPORT_W
         h = int(fig_h) if fig_h else 480
-        if n > 1:
-            h = max(h, 400 * n)
-        fig = set_fig_size(fig, fig_w, h, default_height=max(480, 400 * n))
+        w = max(w, 260 * n_cols + 90)
+        h = max(h, 280 * n_rows + 50)
+        fig = set_fig_size(fig, w, h, default_width=w, default_height=h)
+        _place_expr_colorbars(fig, n)
         return fig, f"{n} gene{'s' if n != 1 else ''} on {x_col or 'PC1'} vs {y_col or 'PC2'}."
     except Exception as exc:  # noqa: BLE001
         err = go.Figure()
@@ -516,7 +502,10 @@ def _render_gene_expr_plot(genes, lookup, by_col, x_col, y_col, cache, fig_w, fi
 
 
 def _gene_expression_figure(score_df, expr, genes, x_col, y_col, var, titles=None) -> go.Figure:
-    """PCA scatter colored by each selected gene (viridis, own min–max)."""
+    """PCA scatter colored by each selected gene (viridis, own min–max).
+
+    Up to four square panels per row; colorbar height matches each plot.
+    """
     genes = [str(g) for g in (genes or []) if str(g) in expr.columns]
     empty = go.Figure()
     if not genes:
@@ -531,19 +520,36 @@ def _gene_expression_figure(score_df, expr, genes, x_col, y_col, var, titles=Non
         titles = [str(t) for t in titles]
 
     n = len(genes)
+    n_cols = min(_EXPR_COLS, n)
+    n_rows = int(math.ceil(n / n_cols))
+    titles_full = list(titles[:n]) + [""] * (n_rows * n_cols - n)
+    v_space = 0.10 if n_rows <= 1 else min(0.16, 0.72 / (n_rows - 1))
+    h_space = 0.08 if n_cols <= 1 else min(0.12, 0.36 / n_cols)
     fig = make_subplots(
-        rows=n,
-        cols=1,
-        subplot_titles=titles,
-        vertical_spacing=0.12 if n > 1 else 0.08,
+        rows=n_rows,
+        cols=n_cols,
+        subplot_titles=titles_full,
+        horizontal_spacing=h_space,
+        vertical_spacing=v_space,
     )
     xlab = _axis_label(x_col, var)
     ylab = _axis_label(y_col, var)
     x = pd.to_numeric(score_df[x_col], errors="coerce")
     y = pd.to_numeric(score_df[y_col], errors="coerce")
     hover = score_df.index.astype(str)
-    for i, gene in enumerate(genes, start=1):
-        title = titles[i - 1] if i - 1 < len(titles) else gene
+    xmin, xmax = float(x.min()), float(x.max())
+    ymin, ymax = float(y.min()), float(y.max())
+    cx = 0.5 * (xmin + xmax)
+    cy = 0.5 * (ymin + ymax)
+    half = 0.5 * max(xmax - xmin, ymax - ymin, 1e-9)
+    half += 0.05 * half
+    xr = [cx - half, cx + half]
+    yr = [cy - half, cy + half]
+
+    for i, gene in enumerate(genes):
+        row = i // n_cols + 1
+        col = i % n_cols + 1
+        title = titles[i] if i < len(titles) else gene
         vals = pd.to_numeric(expr[gene].reindex(score_df.index), errors="coerce")
         fig.add_trace(
             go.Scatter(
@@ -554,13 +560,7 @@ def _gene_expression_figure(score_df, expr, genes, x_col, y_col, var, titles=Non
                     color=vals,
                     colorscale="Viridis",
                     showscale=True,
-                    colorbar=dict(
-                        title=dict(text=title, side="right"),
-                        len=max(0.2, 0.85 / n),
-                        y=1 - (i - 0.5) / n,
-                        yanchor="middle",
-                        thickness=14,
-                    ),
+                    colorbar=dict(thickness=12, outlinewidth=0, xpad=4, ypad=0),
                     cmin=float(np.nanmin(vals.to_numpy(dtype=float))) if vals.notna().any() else 0,
                     cmax=float(np.nanmax(vals.to_numpy(dtype=float))) if vals.notna().any() else 1,
                 ),
@@ -573,24 +573,58 @@ def _gene_expression_figure(score_df, expr, genes, x_col, y_col, var, titles=Non
                 name=title,
                 showlegend=False,
             ),
-            row=i,
-            col=1,
+            row=row,
+            col=col,
         )
-        fig.update_xaxes(title_text=xlab, row=i, col=1)
-        fig.update_yaxes(title_text=ylab, row=i, col=1)
-    if n == 1:
-        fig = equal_xy_axes(fig, score_df, x_col, y_col)
-    else:
-        xmin, xmax = float(x.min()), float(x.max())
-        ymin, ymax = float(y.min()), float(y.max())
-        cx = 0.5 * (xmin + xmax)
-        cy = 0.5 * (ymin + ymax)
-        half = 0.5 * max(xmax - xmin, ymax - ymin, 1e-9)
-        half += 0.05 * half
-        fig.update_xaxes(range=[cx - half, cx + half], constrain="domain")
-        fig.update_yaxes(range=[cy - half, cy + half], constrain="domain")
+        fig.update_xaxes(
+            title_text=xlab if row == n_rows else "",
+            range=xr,
+            constrain="domain",
+            matches=None,
+            row=row,
+            col=col,
+        )
+        xref = "x" if i == 0 else f"x{i + 1}"
+        fig.update_yaxes(
+            title_text=ylab if col == 1 else "",
+            range=yr,
+            scaleanchor=xref,
+            scaleratio=1,
+            constrain="domain",
+            matches=None,
+            row=row,
+            col=col,
+        )
+
     apply_export_layout(fig, title_lines=1, legend=False, uirevision="pca-expr")
+    fig.update_layout(margin=dict(r=70, t=40))
     return fig
+
+
+def _place_expr_colorbars(fig: go.Figure, n: int) -> None:
+    """Match each colorbar height to the square PCA panel."""
+    w = int(fig.layout.width or EXPORT_W)
+    h = int(fig.layout.height or EXPORT_H)
+    margin = fig.layout.margin
+    inner_w = max(1.0, w - float(margin.l or 55) - float(margin.r or 70))
+    inner_h = max(1.0, h - float(margin.t or 40) - float(margin.b or 50))
+    for i in range(n):
+        axis = "xaxis" if i == 0 else f"xaxis{i + 1}"
+        yax = "yaxis" if i == 0 else f"yaxis{i + 1}"
+        xd = fig.layout[axis].domain
+        yd = fig.layout[yax].domain
+        side = min(inner_w * (xd[1] - xd[0]), inner_h * (yd[1] - yd[0]))
+        fig.data[i].marker.colorbar.update(
+            dict(
+                x=xd[1],
+                y=(yd[0] + yd[1]) / 2,
+                len=max(40.0, float(side)),
+                lenmode="pixels",
+                yanchor="middle",
+                xanchor="left",
+                thickness=12,
+            )
+        )
 
 
 def _gene_profile_enrich_fig(genes, kind, cols, label_col):
@@ -728,7 +762,7 @@ class PCAModule:
     id = "pca"
     label = "PCA"
 
-    def layout(self):
+    def level1(self):
         return html.Div(
             [
                 dbc.Row(
@@ -801,65 +835,101 @@ class PCAModule:
                     type="default",
                 ),
                 html.Hr(),
-                dcc.Tabs(
-                    id="pca-analysis-tabs",
-                    value="ari",
-                    children=[
-                        dcc.Tab(
-                            label="ARI of separation",
-                            value="ari",
-                            children=[
-                html.H6("ARI of separation", className="mt-2"),
+                html.H6("Linear classifier (optional)"),
                 html.P(
-                    "Pick a label column and the positive class. Shown: how well each "
-                    "PC separates that class.",
+                    "Pick a label and n PCs. That fit defines the extra sample axis "
+                    "and the gene weights. The curve is only to choose n.",
+                    className="text-muted small",
+                ),
+                dbc.Row(
+                    [
+                        dbc.Col([html.Label("Label column"), dcc.Dropdown(id="pca-clf-label")], md=3),
+                        dbc.Col([html.Label("Positive class"), dcc.Dropdown(id="pca-clf-positive")], md=2),
+                        dbc.Col(
+                            [
+                                html.Label("n PCs"),
+                                dbc.Input(id="pca-clf-n", type="number", value=5, min=2, step=1),
+                            ],
+                            md=1,
+                        ),
+                        dbc.Col(
+                            [
+                                html.Label("min PCs"),
+                                dbc.Input(id="pca-clf-pc-min", type="number", value=2, min=2, step=1),
+                            ],
+                            md=1,
+                        ),
+                        dbc.Col(
+                            [
+                                html.Label("max PCs"),
+                                dbc.Input(id="pca-clf-pc-max", type="number", value=12, min=2, step=1),
+                            ],
+                            md=1,
+                        ),
+                        dbc.Col(
+                            [
+                                html.Br(),
+                                dbc.Checklist(
+                                    id="pca-clf-overlay",
+                                    options=[{"label": "Plot 2-PC boundary on PCA", "value": "on"}],
+                                    value=[],
+                                    inline=True,
+                                ),
+                            ],
+                            md=3,
+                        ),
+                    ],
+                    className="g-2 mb-2",
+                ),
+                dbc.Button("Run linear classifier", id="pca-clf-run", color="primary", className="mb-2"),
+                fig_size_controls("pca-clf", default_width=EXPORT_W, default_height=EXPORT_H),
+                dcc.Graph(
+                    id="pca-clf-perf",
+                    figure=go.Figure(),
+                    config={
+                        **_GRAPH_CONFIG,
+                        "toImageButtonOptions": {
+                            **_GRAPH_CONFIG["toImageButtonOptions"],
+                            "filename": "pca_classifier_performance",
+                        },
+                    },
+                ),
+                html.Div(id="pca-clf-status", className="text-muted small mb-2"),
+                html.Div(id="pca-status", className="text-muted small"),
+                dcc.Store(id="pca-cache"),
+                dcc.Store(id="pca-group-aes", data={}),
+                dcc.Store(id="pca-split-options", data=[]),
+                dcc.Store(id="pca-clf-cache", data=None),
+            ]
+        )
+
+    def level2(self):
+        return html.Div(
+            [
+                html.H6("Weigh genes"),
+                html.P(
+                    "Weights from a PC or from the classifier axis (same n as step 1). "
+                    "Select or deselect top genes, or search to add others. Celov uses "
+                    "the raw weights (not scaled to max |w| = 1).",
                     className="text-muted small",
                 ),
                 dbc.Row(
                     [
                         dbc.Col(
                             [
-                                html.Label("Label column"),
-                                dcc.Dropdown(id="pca-ari-label"),
+                                html.Label("Weight source"),
+                                dcc.RadioItems(
+                                    id="pca-weight-source",
+                                    options=[
+                                        {"label": " PC", "value": "pc"},
+                                        {"label": " Linear classifier", "value": "clf"},
+                                    ],
+                                    value="pc",
+                                    inline=True,
+                                ),
                             ],
                             md=3,
                         ),
-                        dbc.Col(
-                            [
-                                html.Label("Positive class"),
-                                dcc.Dropdown(id="pca-ari-positive"),
-                            ],
-                            md=2,
-                        ),
-                        dbc.Col(
-                            [
-                                html.Label("n PCs"),
-                                dbc.Input(id="pca-ari-n", type="number", value=10, min=1, step=1),
-                            ],
-                            md=2,
-                        ),
-                        dbc.Col(
-                            [
-                                html.Br(),
-                                dbc.Button("Run ARI", id="pca-ari-run", color="primary"),
-                            ],
-                            md=2,
-                        ),
-                    ],
-                    className="g-2 mb-2",
-                ),
-                fig_size_controls("pca-ari", default_width=EXPORT_W, default_height=360),
-                dcc.Graph(id="pca-ari", figure=go.Figure(), config=_GRAPH_CONFIG),
-                html.Div(id="pca-ari-status", className="text-muted small mb-2"),
-                            ],
-                        ),
-                        dcc.Tab(
-                            label="Weighed genes (PC, Celov)",
-                            value="pc-celov",
-                            children=[
-                html.H6("Save weighed genes (PC, Celov)", className="mt-2"),
-                dbc.Row(
-                    [
                         dbc.Col(
                             [
                                 html.Label("PC"),
@@ -867,6 +937,11 @@ class PCAModule:
                             ],
                             md=2,
                         ),
+                    ],
+                    className="g-2 mb-2",
+                ),
+                dbc.Row(
+                    [
                         dbc.Col(
                             [
                                 html.Label("Locus lookup CSV (optional)"),
@@ -882,7 +957,7 @@ class PCAModule:
                                     ]
                                 ),
                             ],
-                            md=4,
+                            md=5,
                         ),
                         dbc.Col(
                             [
@@ -922,239 +997,65 @@ class PCAModule:
                     className="g-2 mb-2",
                 ),
                 dbc.Button("Save Celov", id="pca-weight-save", color="secondary", className="mb-2"),
-                _gene_expr_picker("pca-pc-expr", from_weights=True),
-                            ],
-                        ),
-                        dcc.Tab(
-                            label="Linear classifier",
-                            value="clf",
-                            children=[
-                html.H6("Linear classifier", className="mt-2"),
-                html.P(
-                    "Pick a label column and the positive class. Shown: accuracy vs "
-                    "number of PCs. Optionally draw the 2-PC boundary on the PCA plot. "
-                    "Export weighed genes as Celov.",
-                    className="text-muted small",
-                ),
                 dbc.Row(
                     [
                         dbc.Col(
-                            [
-                                html.Label("Label column"),
-                                dcc.Dropdown(id="pca-clf-label"),
-                            ],
-                            md=3,
+                            dbc.Button("Select top N", id="pca-expr-select-top", color="secondary", outline=True, size="sm"),
+                            width="auto",
                         ),
                         dbc.Col(
-                            [
-                                html.Label("Positive class"),
-                                dcc.Dropdown(id="pca-clf-positive"),
-                            ],
-                            md=2,
+                            dbc.Button(
+                                "Select volcano genes",
+                                id="pca-expr-select-volcano",
+                                color="secondary",
+                                outline=True,
+                                size="sm",
+                            ),
+                            width="auto",
                         ),
                         dbc.Col(
-                            [
-                                html.Label("PCs min"),
-                                dbc.Input(id="pca-clf-pc-min", type="number", value=2, min=2, step=1),
-                            ],
-                            md=1,
-                        ),
-                        dbc.Col(
-                            [
-                                html.Label("PCs max"),
-                                dbc.Input(id="pca-clf-pc-max", type="number", value=12, min=2, step=1),
-                            ],
-                            md=1,
-                        ),
-                        dbc.Col(
-                            [
-                                html.Label("Genes: n PCs"),
-                                dbc.Input(id="pca-clf-gene-pcs", type="number", value=5, min=2, step=1),
-                            ],
-                            md=2,
-                        ),
-                        dbc.Col(
-                            [
-                                html.Br(),
-                                dbc.Checklist(
-                                    id="pca-clf-overlay",
-                                    options=[{"label": "Plot 2-PC boundary on PCA", "value": "on"}],
-                                    value=[],
-                                    inline=True,
-                                ),
-                            ],
-                            md=3,
+                            dbc.Button("Clear genes", id="pca-expr-clear", color="secondary", outline=True, size="sm"),
+                            width="auto",
                         ),
                     ],
                     className="g-2 mb-2",
                 ),
-                dbc.Button("Run linear classifier", id="pca-clf-run", color="primary", className="mb-2"),
-                fig_size_controls(
-                    "pca-clf",
-                    default_width=EXPORT_W,
-                    default_height=EXPORT_H,
+                html.P(
+                    "Select volcano genes uses the last run under Volcano by condition "
+                    "(hits past the fold-change / padj lines).",
+                    className="text-muted small mb-2",
                 ),
-                dcc.Graph(
-                    id="pca-clf-perf",
-                    figure=go.Figure(),
-                    config={
-                        **_GRAPH_CONFIG,
-                        "toImageButtonOptions": {
-                            **_GRAPH_CONFIG["toImageButtonOptions"],
-                            "filename": "pca_classifier_performance",
-                        },
-                    },
-                ),
+                _gene_expr_picker("pca-expr", from_weights=True),
                 html.Div(
-                    id="pca-clf-celov-section",
-                    style={"display": "none"},
-                    children=[
-                        html.H6("Save weighed genes (Celov)", className="mt-3"),
-                        dbc.Row(
-                            [
-                                dbc.Col(
-                                    [
-                                        html.Label(
-                                            "Locus lookup CSV (optional; Celov ID column is set on the dataset)"
-                                        ),
-                                        dbc.InputGroup(
-                                            [
-                                                dbc.Input(id="pca-clf-locus", type="text"),
-                                                dbc.Button(
-                                                    "Browse…",
-                                                    id="pca-clf-locus-browse",
-                                                    color="info",
-                                                    outline=True,
-                                                ),
-                                            ]
-                                        ),
-                                    ],
-                                    md=5,
-                                ),
-                                dbc.Col(
-                                    [
-                                        html.Label("Output path ({} = type)"),
-                                        dbc.InputGroup(
-                                            [
-                                                dbc.Input(id="pca-clf-celov-out", type="text"),
-                                                dbc.Button(
-                                                    "Browse…",
-                                                    id="pca-clf-celov-browse",
-                                                    color="info",
-                                                    outline=True,
-                                                ),
-                                            ]
-                                        ),
-                                    ],
-                                    md=4,
-                                ),
-                                dbc.Col(
-                                    [
-                                        html.Label("Genes"),
-                                        dcc.RadioItems(
-                                            id="pca-clf-celov-mode",
-                                            options=[
-                                                {"label": "up & down", "value": "up_and_down"},
-                                                {"label": "up", "value": "up"},
-                                                {"label": "down", "value": "down"},
-                                                {"label": "all together", "value": "all"},
-                                            ],
-                                            value="up_and_down",
-                                            inline=True,
-                                        ),
-                                    ],
-                                    md=3,
-                                ),
-                            ],
-                            className="g-2 mb-2",
-                        ),
-                        dbc.Button(
-                            "Save Celov",
-                            id="pca-clf-celov-save",
-                            color="secondary",
-                            className="mb-2",
-                        ),
-                    ],
-                ),
-                html.Div(id="pca-clf-status", className="text-muted small mb-2"),
-                _gene_expr_picker("pca-clf-expr", from_weights=True),
-                            ],
-                        ),
-                        dcc.Tab(
-                            label="Condition enrichment",
-                            value="enrich",
-                            children=[
-                html.H6("Condition enrichment", className="mt-2"),
-                html.P(
-                    "Pick numeric and categorical metadata columns, and an optional "
-                    "axis label. Shown: how those columns relate to the top PCs and "
-                    "the biofilm axis.",
-                    className="text-muted small",
-                ),
-                dbc.Row(
                     [
-                        dbc.Col(
-                            [
-                                html.Label("Numeric / rank columns"),
-                                dcc.Dropdown(id="pca-enr-num", multi=True),
-                            ],
-                            md=4,
-                        ),
-                        dbc.Col(
-                            [
-                                html.Label("Categorical columns"),
-                                dcc.Dropdown(id="pca-enr-cat", multi=True),
-                            ],
-                            md=4,
-                        ),
-                        dbc.Col(
-                            [
-                                html.Label("Axis label column"),
-                                dcc.Dropdown(id="pca-enr-label"),
-                            ],
-                            md=2,
-                        ),
-                        dbc.Col(
-                            [
-                                html.Label("PCs in heatmaps"),
-                                dbc.Input(id="pca-enr-show", type="number", value=2, min=1, step=1),
-                            ],
-                            md=1,
-                        ),
-                        dbc.Col(
-                            [
-                                html.Label("PCs for axis"),
-                                dbc.Input(id="pca-enr-axis", type="number", value=7, min=1, step=1),
-                            ],
-                            md=1,
-                        ),
+                        dcc.Input(id="pca-clf-locus", type="hidden"),
+                        dcc.Input(id="pca-clf-gene-pcs", type="hidden", value=5),
+                        dcc.Input(id="pca-clf-celov-out", type="hidden"),
+                        dcc.RadioItems(id="pca-clf-celov-mode", options=[], value="up_and_down"),
+                        html.Button(id="pca-clf-celov-save", n_clicks=0, style={"display": "none"}),
+                        html.Button(id="pca-clf-locus-browse", n_clicks=0, style={"display": "none"}),
+                        html.Button(id="pca-clf-celov-browse", n_clicks=0, style={"display": "none"}),
+                        html.Div(id="pca-clf-celov-section"),
+                        dcc.Dropdown(id="pca-pc-expr-by"),
+                        dcc.Dropdown(id="pca-pc-expr-genes", multi=True),
+                        dbc.Input(id="pca-pc-expr-topn", type="number", value=20),
+                        dcc.RadioItems(id="pca-pc-expr-side", value="abs"),
+                        dcc.Graph(id="pca-pc-expr-fig", figure=go.Figure()),
+                        html.Div(id="pca-pc-expr-status"),
+                        dcc.Dropdown(id="pca-clf-expr-by"),
+                        dcc.Dropdown(id="pca-clf-expr-genes", multi=True),
+                        dbc.Input(id="pca-clf-expr-topn", type="number", value=20),
+                        dcc.RadioItems(id="pca-clf-expr-side", value="abs"),
+                        dcc.Graph(id="pca-clf-expr-fig", figure=go.Figure()),
+                        html.Div(id="pca-clf-expr-status"),
                     ],
-                    className="g-2 mb-2",
+                    style={"display": "none"},
                 ),
-                dbc.Button("Run condition enrichment", id="pca-enr-run", color="primary", className="mb-2"),
-                fig_size_controls("pca-enr-num", default_width=EXPORT_W, default_height=720),
-                dcc.Graph(id="pca-enr-num-fig", figure=go.Figure(), config=_GRAPH_CONFIG),
-                fig_size_controls("pca-enr-cat", default_width=EXPORT_W, default_height=1100),
-                dcc.Graph(id="pca-enr-cat-fig", figure=go.Figure(), config=_GRAPH_CONFIG),
-                html.Div(id="pca-enr-status", className="text-muted small mb-2"),
-                            ],
-                        ),
-                        dcc.Tab(
-                            label="Gene expression",
-                            value="gene-expr",
-                            children=[
-                _gene_expr_picker("pca-expr", from_weights=False),
-                            ],
-                        ),
-                    ],
-                ),
-                html.Div(id="pca-status", className="text-muted small"),
-                dcc.Store(id="pca-cache"),
-                dcc.Store(id="pca-group-aes", data={}),
-                dcc.Store(id="pca-split-options", data=[]),
-                dcc.Store(id="pca-clf-cache", data=None),
             ]
         )
+
+    def layout(self):
+        return html.Div([self.level1(), self.level2()])
 
     def register_callbacks(self, app: Dash) -> None:
         @app.callback(
@@ -1315,31 +1216,16 @@ class PCAModule:
 
         @app.callback(
             Output("pca-clf-label", "options"),
-            Output("pca-ari-label", "options"),
-            Output("pca-ari-label", "value"),
-            Output("pca-enr-label", "options"),
-            Output("pca-enr-label", "value"),
-            Output("pca-enr-num", "options"),
-            Output("pca-enr-num", "value"),
-            Output("pca-enr-cat", "options"),
-            Output("pca-enr-cat", "value"),
+            Output("pca-clf-label", "value"),
             Input("session-store", "data"),
             Input("pca-cache", "data"),
-            State("pca-ari-label", "value"),
-            State("pca-enr-label", "value"),
-            State("pca-enr-num", "value"),
-            State("pca-enr-cat", "value"),
+            State("pca-clf-label", "value"),
         )
-        def _fill_clf_label(session_blob, cache, ari_cur, enr_lab, num_cur, cat_cur):
+        def _fill_clf_label(session_blob, cache, current):
             cols = meta_columns_from_store(session_blob)
             opts = [{"label": c, "value": c} for c in cols]
-            ari_val = ari_cur if ari_cur in cols else ("Biofilm" if "Biofilm" in cols else (cols[0] if cols else None))
-            enr_val = enr_lab if enr_lab in cols else ("Biofilm" if "Biofilm" in cols else (cols[0] if cols else None))
-            num_pref = present_cols(cols, DEFAULT_NUM_COLS) or cols
-            cat_pref = present_cols(cols, DEFAULT_CAT_COLS) or cols
-            num_val = [c for c in (num_cur or num_pref) if c in cols]
-            cat_val = [c for c in (cat_cur or cat_pref) if c in cols]
-            return opts, opts, ari_val, opts, enr_val, opts, num_val, opts, cat_val
+            value = current if current in cols else ("Biofilm" if "Biofilm" in cols else (cols[0] if cols else None))
+            return opts, value
 
         @app.callback(
             Output("pca-clf-positive", "options"),
@@ -1356,24 +1242,6 @@ class PCAModule:
                 return [], None
             opts = [{"label": v, "value": v} for v in levels]
             value = current if current in levels else (levels[-1] if levels else None)
-            return opts, value
-
-        @app.callback(
-            Output("pca-ari-positive", "options"),
-            Output("pca-ari-positive", "value"),
-            Input("pca-ari-label", "value"),
-            State("pca-cache", "data"),
-            State("pca-ari-positive", "value"),
-        )
-        def _fill_ari_positive(label_col, cache, current):
-            if not label_col or not cache:
-                return [], None
-            levels = meta_levels(label_col)
-            if not levels:
-                return [], None
-            opts = [{"label": v, "value": v} for v in levels]
-            prefer = next((v for v in ("True", "true", "1") if v in levels), None)
-            value = current if current in levels else (prefer or (levels[-1] if levels else None))
             return opts, value
 
         @app.callback(
@@ -1397,7 +1265,7 @@ class PCAModule:
             State("pca-clf-positive", "value"),
             State("pca-clf-pc-min", "value"),
             State("pca-clf-pc-max", "value"),
-            State("pca-clf-gene-pcs", "value"),
+            State("pca-clf-n", "value"),
             State("pca-clf-cache", "data"),
             State("session-store", "data"),
             State("ds-active", "value"),
@@ -1425,6 +1293,11 @@ class PCAModule:
                 if not clf_cache or not clf_cache.get("perf"):
                     return no_update, no_update, no_update
                 perf = pd.DataFrame(clf_cache["perf"])
+                ari = (
+                    pd.DataFrame(clf_cache["ari"])
+                    if clf_cache.get("ari")
+                    else None
+                )
                 fig = performance_figure(
                     perf,
                     title=_plotly_title(
@@ -1432,6 +1305,7 @@ class PCAModule:
                         f"split on {clf_cache.get('label_col')} "
                         f"(positive = {clf_cache.get('positive')})",
                     ),
+                    ari_df=ari,
                 )
                 return no_update, set_fig_size(fig, fig_w, fig_h), no_update
 
@@ -1442,22 +1316,34 @@ class PCAModule:
             try:
                 score_df = _PCA_RUNTIME["score_df"]
                 y = encode_binary_labels(score_df[label_col], positive)
-                perf = classifier_performance(score_df, y, int(pc_min or 2), int(pc_max or 12))
+                n_lo = int(pc_min or 2)
+                n_hi = int(pc_max or 12)
+                perf = classifier_performance(score_df, y, n_lo, n_hi)
+                try:
+                    ari = pc_separation_ari(score_df, label_col, positive, n_hi)
+                except Exception:  # noqa: BLE001
+                    ari = None
                 fig = performance_figure(
                     perf,
                     title=_plotly_title(
                         f"Linear Classifier on PCs for {dataset}",
                         f"split on {label_col} (positive = {positive})",
                     ),
+                    ari_df=ari,
                 )
                 fig = set_fig_size(fig, fig_w, fig_h)
                 res2 = fit_pc_classifier(score_df, y, 2)
                 n_gene = int(gene_pcs or 5)
                 res_g = fit_pc_classifier(score_df, y, n_gene)
+                if res_g:
+                    axis = classifier_axis_scores(score_df, res_g["w"], n_gene, CLF_AXIS)
+                    score_df[CLF_AXIS] = axis
+                    _PCA_RUNTIME["score_df"] = score_df
                 new_cache = {
                     "label_col": label_col,
                     "positive": str(positive),
                     "perf": perf.to_dict(orient="list") if perf is not None else {},
+                    "ari": ari.to_dict(orient="list") if ari is not None else {},
                     "w2": list(map(float, res2["w"])) if res2 else None,
                     "b2": float(res2["b"]) if res2 else None,
                     "cv2": float(res2["cv_acc"]) if res2 else None,
@@ -1467,7 +1353,8 @@ class PCAModule:
                     "cv_gene": float(res_g["cv_acc"]) if res_g else None,
                 }
                 msg = (
-                    f"Classifier done. 2-PC CV={new_cache['cv2']:.3f}; "
+                    f"Classifier done. {n_gene}-PC axis stored. "
+                    f"2-PC CV={new_cache['cv2']:.3f}; "
                     f"{n_gene}-PC train={new_cache['train_gene']:.3f}, CV={new_cache['cv_gene']:.3f}."
                     if res2 and res_g
                     else "Classifier finished with missing fits (check class sizes / n_pcs)."
@@ -1475,136 +1362,6 @@ class PCAModule:
                 return new_cache, fig, msg
             except Exception as exc:  # noqa: BLE001
                 return no_update, empty, f"Classifier error: {exc}"
-
-        @app.callback(
-            Output("pca-ari", "figure"),
-            Output("pca-ari-status", "children"),
-            Input("pca-ari-run", "n_clicks"),
-            Input("pca-ari-fig-w", "value"),
-            Input("pca-ari-fig-h", "value"),
-            State("pca-ari-label", "value"),
-            State("pca-ari-positive", "value"),
-            State("pca-ari-n", "value"),
-            State("session-store", "data"),
-            State("ds-active", "value"),
-            prevent_initial_call=True,
-        )
-        def _run_ari(n_clicks, fig_w, fig_h, label_col, positive, n_pcs, session_blob, active):
-            empty = go.Figure()
-            if "score_df" not in _PCA_RUNTIME:
-                return empty, "Run PCA first."
-            if not label_col or positive is None or positive == "":
-                return empty, "Choose label column and positive class."
-            try:
-                score_df = _PCA_RUNTIME["score_df"]
-                n_use = max(1, int(n_pcs or 10))
-                sep = pc_separation_ari(score_df, label_col, positive, n_use)
-                dataset = _active_dataset_name(session_blob, active)
-                fig = ari_figure(
-                    sep,
-                    title=_plotly_title(
-                        f"ARI of {label_col}={positive} on each PC",
-                        dataset,
-                    ),
-                )
-                return set_fig_size(fig, fig_w, fig_h, default_height=360), (
-                    f"ARI on first {len(sep)} PCs; max={sep['ARI'].max():.3f} "
-                    f"at PC{int(sep.loc[sep['ARI'].idxmax(), 'PC'])}."
-                )
-            except Exception as exc:  # noqa: BLE001
-                return empty, f"ARI error: {exc}"
-
-        @app.callback(
-            Output("pca-enr-num-fig", "figure"),
-            Output("pca-enr-cat-fig", "figure"),
-            Output("pca-enr-status", "children"),
-            Input("pca-enr-run", "n_clicks"),
-            Input("pca-enr-num-fig-w", "value"),
-            Input("pca-enr-num-fig-h", "value"),
-            Input("pca-enr-cat-fig-w", "value"),
-            Input("pca-enr-cat-fig-h", "value"),
-            State("pca-enr-num", "value"),
-            State("pca-enr-cat", "value"),
-            State("pca-enr-label", "value"),
-            State("pca-enr-show", "value"),
-            State("pca-enr-axis", "value"),
-            State("session-store", "data"),
-            State("ds-active", "value"),
-            prevent_initial_call=True,
-        )
-        def _run_pca_enrich(
-            n_clicks,
-            num_w,
-            num_h,
-            cat_w,
-            cat_h,
-            num_cols,
-            cat_cols,
-            label_col,
-            n_show,
-            n_axis,
-            session_blob,
-            active,
-        ):
-            empty = go.Figure()
-            if "score_df" not in _PCA_RUNTIME:
-                return empty, empty, "Run PCA first."
-            try:
-                score_df = _PCA_RUNTIME["score_df"].copy()
-                n_show = max(1, int(n_show or 2))
-                n_axis = max(1, int(n_axis or 7))
-                num_cols = list(num_cols or [])
-                cat_cols = list(cat_cols or [])
-                if not num_cols and not cat_cols:
-                    return empty, empty, "Select numeric and/or categorical columns."
-                axes = [f"PC{i}" for i in range(1, n_show + 1) if f"PC{i}" in score_df.columns]
-                if label_col and label_col in score_df.columns:
-                    axis, _w = biofilm_axis_scores(score_df, label_col, n_axis)
-                    score_df["Biofilm axis"] = axis
-                    axes = axes + ["Biofilm axis"]
-                dataset = _active_dataset_name(session_blob, active)
-                num_fig = empty
-                if num_cols:
-                    mats = corr_vs_axes(score_df, num_cols, axes)
-                    num_fig = heatmap_matrix_fig(
-                        [mats["Pearson"], mats["Spearman"]],
-                        ["Pearson", "Spearman"],
-                        title=_plotly_title(
-                            "Correlation of rankable metadata with PCs / biofilm axis",
-                            f"{dataset} (axis from {n_axis} PCs)",
-                        ),
-                        zmin=-1,
-                        zmax=1,
-                    )
-                    needed = int(num_fig.layout.height or 720)
-                    num_fig = set_fig_size(
-                        num_fig,
-                        num_w,
-                        max(num_h or 0, needed),
-                        default_height=needed,
-                    )
-                cat_fig = empty
-                if cat_cols:
-                    var_mat, dist_mat = cat_entry_mats(score_df, cat_cols, axes, label_col=label_col)
-                    cat_fig = heatmap_matrix_fig(
-                        [var_mat, dist_mat],
-                        [
-                            "var_ratio (within / total) — small = clusters",
-                            "mean |distance| to label / √within-var",
-                        ],
-                        title=_plotly_title("Categorical entries vs PCs / biofilm axis", dataset),
-                        zmin=0,
-                    )
-                    needed = int(cat_fig.layout.height or 1100)
-                    cat_fig = set_fig_size(
-                        cat_fig,
-                        cat_w,
-                        max(cat_h or 0, needed),
-                        default_height=needed,
-                    )
-                return num_fig, cat_fig, f"Condition enrichment on axes {axes}."
-            except Exception as exc:  # noqa: BLE001
-                return empty, empty, f"Enrichment error: {exc}"
 
         @app.callback(
             Output("pca-scatter", "figure"),
@@ -1757,25 +1514,42 @@ class PCAModule:
         @app.callback(
             Output("pca-status", "children", allow_duplicate=True),
             Input("pca-weight-save", "n_clicks"),
+            State("pca-weight-source", "value"),
             State("pca-weight-pc", "value"),
             State("pca-weight-out", "value"),
             State("pca-weight-celov-mode", "value"),
             State("pca-pc-locus", "value"),
+            State("pca-clf-cache", "data"),
             State("project-store", "data"),
             State("ds-active", "value"),
             prevent_initial_call=True,
         )
-        def _save_pc_celov(n_clicks, pc, out_path, mode, locus_path, project_blob, active):
+        def _save_pc_celov(
+            n_clicks, source, pc, out_path, mode, locus_path, clf_cache, project_blob, active
+        ):
             if "loadings" not in _PCA_RUNTIME:
                 return "Run PCA first."
-            if not pc:
-                return "Choose a PC for weighed genes."
             if not out_path or not str(out_path).strip():
                 return "Choose an output .txt path (Browse)."
             try:
                 from src.biocyc.celov_multiomics_post import load_locus_lookup
 
-                weighed = weighed_genes_from_pc(_PCA_RUNTIME["loadings"], str(pc))
+                if source == "clf":
+                    if not clf_cache or not clf_cache.get("w_gene"):
+                        return "Run the linear classifier first."
+                    n_pcs = int(clf_cache.get("gene_pcs") or 5)
+                    weighed = build_weighed_genes(
+                        _PCA_RUNTIME["loadings"],
+                        _PCA_RUNTIME["explained_variance"],
+                        np.asarray(clf_cache["w_gene"], dtype=float),
+                        n_pcs,
+                    )
+                    label = f"{CLF_AXIS} ({n_pcs} PCs)"
+                else:
+                    if not pc:
+                        return "Choose a PC for weighed genes."
+                    weighed = weighed_genes_from_pc(_PCA_RUNTIME["loadings"], str(pc))
+                    label = str(pc)
                 lookup = None
                 if locus_path and str(locus_path).strip():
                     lookup = load_locus_lookup(str(locus_path).strip())
@@ -1795,7 +1569,7 @@ class PCAModule:
                     locus_lookup=lookup,
                     id_column=resolve_celov_id_col(entry),
                 )
-                return f"Saved Celov ({pc}): " + ", ".join(str(p) for p in paths)
+                return f"Saved Celov ({label}): " + ", ".join(str(p) for p in paths)
             except Exception as exc:  # noqa: BLE001
                 return f"Celov save error: {exc}"
 
@@ -1907,21 +1681,64 @@ class PCAModule:
         @app.callback(
             Output("pca-expr-genes", "options"),
             Input("pca-cache", "data"),
+            Input("pca-clf-cache", "data"),
+            Input("pca-weight-source", "value"),
+            Input("pca-weight-pc", "value"),
             Input("pca-expr-by", "value"),
+            Input("pca-expr-topn", "value"),
+            Input("pca-expr-side", "value"),
             Input("pca-pc-locus", "value"),
             Input("pca-expr-genes", "search_value"),
             Input("pca-expr-genes", "value"),
+            Input("vc-cache", "data"),
         )
-        def _pca_expr_gene_options(cache, by_col, locus_path, search, selected):
+        def _pca_expr_gene_options(
+            cache, clf_cache, source, pc, by_col, topn, side, locus_path, search, selected, _vc_cache
+        ):
             expr = _live_expression()
             if expr is None or not cache:
                 return []
             lookup = _ensure_pca_lookup(locus_path)
             names = _gene_name_map(lookup, by_col)
-            hits = filter_ids_by_search(
+            ranked, weights = _ranked_expr_gene_ids(source, pc, topn, side, clf_cache)
+            search_hits = filter_ids_by_search(
                 expr.columns.astype(str), search, selected, labels=names
             )
-            return _gene_dropdown_options(hits, lookup, by_col)
+            ordered = list(ranked)
+            extra = list(selected or []) + list(search_hits) + volcano_passing_gene_ids()
+            for gid in extra:
+                if str(gid) not in ordered:
+                    ordered.append(str(gid))
+            return _gene_dropdown_options(ordered, lookup, by_col, weights)
+
+        @app.callback(
+            Output("pca-expr-genes", "value"),
+            Output("analysis-selected-genes", "data", allow_duplicate=True),
+            Input("pca-expr-select-top", "n_clicks"),
+            Input("pca-expr-select-volcano", "n_clicks"),
+            Input("pca-expr-clear", "n_clicks"),
+            Input("pca-expr-genes", "value"),
+            State("pca-weight-source", "value"),
+            State("pca-weight-pc", "value"),
+            State("pca-expr-topn", "value"),
+            State("pca-expr-side", "value"),
+            State("pca-clf-cache", "data"),
+            prevent_initial_call=True,
+        )
+        def _pca_expr_select_or_clear(
+            n_top, n_volcano, n_clear, current, source, pc, topn, side, clf_cache
+        ):
+            tid = callback_context.triggered_id
+            if tid == "pca-expr-clear":
+                return [], []
+            if tid == "pca-expr-select-volcano":
+                ids = volcano_passing_gene_ids()
+                return ids, ids
+            if tid == "pca-expr-select-top":
+                ids, _ = _ranked_expr_gene_ids(source, pc, topn, side, clf_cache)
+                return ids, ids
+            genes = [str(g) for g in (current or [])]
+            return no_update, genes
 
         @app.callback(
             Output("pca-pc-expr-genes", "options"),
@@ -1993,45 +1810,6 @@ class PCAModule:
                 genes, _ensure_pca_lookup(locus_path), by_col, x_col, y_col, cache, fig_w, fig_h
             )
 
-        @app.callback(
-            Output("pca-pc-expr-fig", "figure"),
-            Output("pca-pc-expr-status", "children"),
-            Input("pca-pc-expr-genes", "value"),
-            Input("pca-pc-expr-by", "value"),
-            Input("pca-x", "value"),
-            Input("pca-y", "value"),
-            Input("pca-cache", "data"),
-            Input("pca-pc-expr-fig-w", "value"),
-            Input("pca-pc-expr-fig-h", "value"),
-            Input("pca-pc-locus", "value"),
-        )
-        def _pca_pc_expr_plot(genes, by_col, x_col, y_col, cache, fig_w, fig_h, locus_path):
-            return _render_gene_expr_plot(
-                genes, _ensure_pca_lookup(locus_path), by_col, x_col, y_col, cache, fig_w, fig_h
-            )
-
-        @app.callback(
-            Output("pca-clf-expr-fig", "figure"),
-            Output("pca-clf-expr-status", "children"),
-            Input("pca-clf-expr-genes", "value"),
-            Input("pca-clf-expr-by", "value"),
-            Input("pca-x", "value"),
-            Input("pca-y", "value"),
-            Input("pca-cache", "data"),
-            Input("pca-clf-expr-fig-w", "value"),
-            Input("pca-clf-expr-fig-h", "value"),
-            Input("pca-clf-locus", "value"),
-            Input("pca-clf-cache", "data"),
-        )
-        def _pca_clf_expr_plot(
-            genes, by_col, x_col, y_col, cache, fig_w, fig_h, locus_path, clf_cache
-        ):
-            if not clf_cache or not clf_cache.get("w_gene"):
-                return go.Figure(), "Run the linear classifier first."
-            return _render_gene_expr_plot(
-                genes, _ensure_pca_lookup(locus_path), by_col, x_col, y_col, cache, fig_w, fig_h
-            )
-
         register_sample_detail_callback(
             app,
             graph_id="pca-scatter",
@@ -2039,56 +1817,10 @@ class PCAModule:
             cache_id="pca-cache",
             get_score_df=_score_frame_for_plot,
         )
-
-        def _wire_gene_expr_extras(prefix: str) -> None:
-            register_sample_detail_callback(
-                app,
-                graph_id=f"{prefix}-fig",
-                detail_id=f"{prefix}-sample-detail",
-                cache_id="pca-cache",
-                get_score_df=_score_frame_for_plot,
-            )
-
-            @app.callback(
-                Output(f"{prefix}-enr-cols", "options"),
-                Output(f"{prefix}-enr-cols", "value"),
-                Output(f"{prefix}-enr-label", "options"),
-                Output(f"{prefix}-enr-label", "value"),
-                Input("session-store", "data"),
-                Input(f"{prefix}-enr-kind", "value"),
-                State(f"{prefix}-enr-cols", "value"),
-                State(f"{prefix}-enr-label", "value"),
-            )
-            def _fill_gene_enr(session_blob, kind, current, label_cur, _prefix=prefix):
-                cols = meta_columns_from_store(session_blob)
-                opts = [{"label": c, "value": c} for c in cols]
-                pref_src = DEFAULT_NUM_COLS if kind == "rank" else DEFAULT_CAT_COLS
-                pref = present_cols(cols, pref_src) or cols
-                triggered = callback_context.triggered_id
-                if triggered == f"{_prefix}-enr-kind" or not current:
-                    value = list(pref)
-                else:
-                    value = [c for c in current if c in cols]
-                label = label_cur if label_cur in cols else (
-                    "Biofilm" if "Biofilm" in cols else (cols[0] if cols else None)
-                )
-                return opts, value, opts, label
-
-            @app.callback(
-                Output(f"{prefix}-enr-fig", "figure"),
-                Output(f"{prefix}-enr-status", "children"),
-                Input(f"{prefix}-enr-run", "n_clicks"),
-                State(f"{prefix}-genes", "value"),
-                State(f"{prefix}-enr-kind", "value"),
-                State(f"{prefix}-enr-cols", "value"),
-                State(f"{prefix}-enr-label", "value"),
-                prevent_initial_call=True,
-            )
-            def _run_gene_enr(n_clicks, genes, kind, cols, label_col):
-                try:
-                    return _gene_profile_enrich_fig(genes, kind, cols, label_col)
-                except Exception as exc:  # noqa: BLE001
-                    return go.Figure(), f"Enrichment error: {exc}"
-
-        for _prefix in ("pca-expr", "pca-pc-expr", "pca-clf-expr"):
-            _wire_gene_expr_extras(_prefix)
+        register_sample_detail_callback(
+            app,
+            graph_id="pca-expr-fig",
+            detail_id="pca-expr-sample-detail",
+            cache_id="pca-cache",
+            get_score_df=_score_frame_for_plot,
+        )

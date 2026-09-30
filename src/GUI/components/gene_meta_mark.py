@@ -9,6 +9,7 @@ import pandas as pd
 import plotly.graph_objects as go
 
 _COLOR_MARK = "#e41a1c"
+_NAME_COLS = ("geneName", "gene_name", "Gene name", "Gene Name")
 
 
 def split_meta_tokens(value) -> list[str]:
@@ -74,16 +75,18 @@ def gene_meta_hover_map(
     lookup: pd.DataFrame | None,
     columns: list[str] | None,
 ) -> dict[str, str]:
-    """Map locusTag / geneID → ``<br>col: value`` lines for Plotly hover text."""
-    cols = [str(c) for c in (columns or []) if c]
-    if (
-        lookup is None
-        or not isinstance(lookup, pd.DataFrame)
-        or lookup.empty
-        or not cols
-    ):
+    """Map locusTag / geneID → ``<br>col: value`` lines for Plotly hover text.
+
+    Gene-name columns are always included when present in the locus lookup,
+    even if the dataset picker selection is empty.
+    """
+    if lookup is None or not isinstance(lookup, pd.DataFrame) or lookup.empty:
         return {}
-    use = [c for c in cols if c in lookup.columns]
+    requested = [str(c) for c in (columns or []) if c]
+    use: list[str] = []
+    for c in list(_NAME_COLS) + requested:
+        if c in lookup.columns and c not in use:
+            use.append(c)
     if not use:
         return {}
     id_cols = [c for c in ("locusTag", "geneID") if c in lookup.columns]
@@ -118,7 +121,36 @@ def gene_hover_text(
     hmap = hover_map or {}
     out: list[str] = []
     for gid in gene_ids.astype(str):
-        out.append(gid + hmap.get(gid, ""))
+        extra = hmap.get(gid) or hmap.get(gid.strip(), "")
+        out.append(gid + extra)
+    return out
+
+
+def gene_name_labels(lookup: pd.DataFrame | None) -> dict[str, str]:
+    """Map locusTag / geneID → gene name for heatmap hover."""
+    if lookup is None or not isinstance(lookup, pd.DataFrame) or lookup.empty:
+        return {}
+    name_col = next((c for c in _NAME_COLS if c in lookup.columns), None)
+    if not name_col:
+        return {}
+    id_cols = [c for c in ("locusTag", "geneID") if c in lookup.columns]
+    if not id_cols:
+        return {}
+    out: dict[str, str] = {}
+    for _, row in lookup.iterrows():
+        val = row.get(name_col)
+        if val is None or (isinstance(val, float) and pd.isna(val)):
+            continue
+        name = str(val).strip()
+        if not name:
+            continue
+        for id_col in id_cols:
+            gid = row.get(id_col)
+            if gid is None or (isinstance(gid, float) and pd.isna(gid)):
+                continue
+            key = str(gid).strip()
+            if key and key not in out:
+                out[key] = name
     return out
 
 

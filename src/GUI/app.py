@@ -32,7 +32,9 @@ from src.GUI.data_store import (
     session_to_store,
     set_live_session,
 )
+from src.GUI.components.workspace import LEVEL_METHODS, register_workspace_callbacks, workspace_layout
 from src.GUI.modules import MODULE_REGISTRY
+from src.GUI.modules.workspace_enrichment import enrichment_layout, register_enrichment_callbacks
 from src.GUI.project import DatasetEntry, open_project
 
 # Pre-filled working folder in the UI and ``--project`` default.
@@ -64,9 +66,10 @@ def create_app(default_project: str | None = None) -> Dash:
         title="Biofilm RNA-Seq Viewer",
     )
 
-    module_tabs = [
-        dbc.Tab(mod.layout(), label=mod.label, tab_id=mod.id) for mod in MODULE_REGISTRY
-    ]
+    by_id = {mod.id: mod for mod in MODULE_REGISTRY}
+    method_modules = [by_id[spec["id"]] for spec in LEVEL_METHODS]
+    level2_extra = html.Div()
+    level3 = enrichment_layout()
 
     app.layout = dbc.Container(
         [
@@ -107,7 +110,7 @@ def create_app(default_project: str | None = None) -> Dash:
                 className="mb-3",
             ),
             dbc.Card(dbc.CardBody(dataset_picker_layout()), className="mb-3"),
-            dbc.Tabs(module_tabs, id="analysis-tabs", active_tab=MODULE_REGISTRY[0].id),
+            workspace_layout(method_modules, level2_extra, level3),
         ],
         fluid=True,
         className="pb-5",
@@ -115,8 +118,10 @@ def create_app(default_project: str | None = None) -> Dash:
 
     _register_core_callbacks(app)
     _register_browse_callbacks(app)
+    register_workspace_callbacks(app)
     for mod in MODULE_REGISTRY:
         mod.register_callbacks(app)
+    register_enrichment_callbacks(app)
     _register_dataset_reset_callbacks(app)
 
     return app
@@ -454,6 +459,12 @@ def _register_core_callbacks(app: Dash) -> None:
             return [], None
         opts = [{"label": c, "value": c} for c in cols]
         cur = [c for c in (current or []) if c in cols]
+        if not cur:
+            cur = [
+                c
+                for c in ("geneName", "gene_name", "Gene name", "Gene Name")
+                if c in cols
+            ]
         return opts, (cur or None)
 
 
@@ -465,19 +476,19 @@ def _register_dataset_reset_callbacks(app: Dash) -> None:
         Output("pca-clf-cache", "data", allow_duplicate=True),
         Output("hc-cache", "data", allow_duplicate=True),
         Output("hc-cluster-sel", "data", allow_duplicate=True),
-        Output("umap-cache", "data", allow_duplicate=True),
         Output("grad-cache", "data", allow_duplicate=True),
         Output("grad-selected-genes", "data", allow_duplicate=True),
         Output("par-cache", "data", allow_duplicate=True),
         Output("par-grad-cache", "data", allow_duplicate=True),
         Output("par-grad-selected", "data", allow_duplicate=True),
         Output("vc-cache", "data", allow_duplicate=True),
+        Output("analysis-selected-genes", "data", allow_duplicate=True),
         Input("session-store", "data"),
         prevent_initial_call=True,
     )
     def _clear_stale_analysis(_blob):
         clear_analysis_runtimes()
-        return None, None, None, {"a": [], "b": []}, None, None, [], None, None, [], None
+        return None, None, None, {"a": [], "b": []}, None, [], None, None, [], None, []
 
 
 def main(argv: list[str] | None = None) -> None:

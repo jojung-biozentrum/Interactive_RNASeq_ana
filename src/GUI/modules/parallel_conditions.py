@@ -18,11 +18,9 @@ from src.biocyc.celov_multiomics_post import load_locus_lookup
 from src.GUI.project import resolve_celov_id_col
 
 from ..components.controls import (
-    COLOR_CONSTANTS,
     EXPORT_H,
     EXPORT_W,
     SHAPE_CONSTANTS,
-    SIZE_CONSTANTS,
     apply_export_layout,
     equal_xy_axes,
     fig_size_controls,
@@ -35,7 +33,7 @@ from ..components.sample_detail import (
     sample_detail_placeholder,
     sample_detail_table,
 )
-from ..components.gene_meta_mark import filter_ids_by_search
+from ..components.gene_meta_mark import filter_ids_by_search, gene_hover_text, gene_meta_hover_map
 from ..data_store import (
     active_dataset_entry as _active_dataset_entry,
     locus_path_from_session as _locus_path_from_session,
@@ -325,6 +323,7 @@ def biofilm_vs_close_fig(
     *,
     mark_genes: set[str] | None = None,
     mark_label: str | None = None,
+    hover_map: dict[str, str] | None = None,
 ) -> go.Figure:
     y_col = _METHOD_COLS[method]
     x_col = f"{y_col}_biofilm"
@@ -343,7 +342,7 @@ def biofilm_vs_close_fig(
                 mode="markers",
                 marker=dict(size=6, color="#888888", opacity=0.45),
                 customdata=base["geneID"].astype(str),
-                text=base["geneID"].astype(str),
+                text=gene_hover_text(base["geneID"], hover_map),
                 hovertemplate=(
                     "%{text}<br>levels=%{x:.3g}<br>close=%{y:.3g}<extra></extra>"
                 ),
@@ -359,7 +358,7 @@ def biofilm_vs_close_fig(
                 mode="markers",
                 marker=dict(size=9, color="#d62728"),
                 customdata=sub["geneID"].astype(str),
-                text=sub["geneID"].astype(str),
+                text=gene_hover_text(sub["geneID"], hover_map),
                 name=mark_label or "selected",
                 hovertemplate=(
                     "%{text}<br>levels=%{x:.3g}<br>close=%{y:.3g}<extra></extra>"
@@ -653,16 +652,14 @@ def run_per_level_clusters(
 
 class ParallelConditionsModule:
     id = "parallel-conditions"
-    label = "Parallel conditions & genes"
+    label = "Parallel conditions"
 
-    def layout(self):
+    def level1(self):
         return html.Div(
             [
                 html.P(
                     "Pick the biofilm subset, the level column, and the level order. "
-                    "Each level is clustered with all non-subset samples. Shown: a PCA "
-                    "per level, then enrichment or gene gradients on closest or "
-                    "uniquely-close samples.",
+                    "Each level is clustered with all non-subset samples.",
                     className="text-muted small",
                 ),
                 dbc.Row(
@@ -703,11 +700,8 @@ class ParallelConditionsModule:
                 html.Div(id="par-summary"),
                 html.H6("PCA per level", className="mt-3"),
                 html.P(
-                    "Subset-value samples of the current level are black (alpha 0.7); "
-                    "each of their clusters is a different shape. Closest or unique "
-                    "closest (set difference; empty unique uses all closest) use the "
-                    "chosen color, shape, and size (alpha 0.7). Other samples in that "
-                    "level's tree are grey (alpha 0.1). Four panels per row.",
+                    "Level samples black (α 0.7, shape by cluster); highlighted samples "
+                    "crimson; others grey (α 0.1). Four panels per row.",
                     className="text-muted small",
                 ),
                 dbc.Row(
@@ -748,47 +742,6 @@ class ParallelConditionsModule:
                             ],
                             md=3,
                         ),
-                    ],
-                    className="g-2 mb-2",
-                ),
-                dbc.Row(
-                    [
-                        dbc.Col(
-                            [
-                                html.Label("Closest color"),
-                                dcc.Dropdown(
-                                    id="par-pca-color",
-                                    options=[{"label": c, "value": c} for c in COLOR_CONSTANTS],
-                                    value="crimson",
-                                    clearable=False,
-                                ),
-                            ],
-                            md=2,
-                        ),
-                        dbc.Col(
-                            [
-                                html.Label("Closest shape"),
-                                dcc.Dropdown(
-                                    id="par-pca-shape",
-                                    options=[{"label": s, "value": s} for s in SHAPE_CONSTANTS],
-                                    value="circle",
-                                    clearable=False,
-                                ),
-                            ],
-                            md=2,
-                        ),
-                        dbc.Col(
-                            [
-                                html.Label("Closest size"),
-                                dcc.Dropdown(
-                                    id="par-pca-size",
-                                    options=[{"label": s, "value": int(s)} for s in SIZE_CONSTANTS],
-                                    value=12,
-                                    clearable=False,
-                                ),
-                            ],
-                            md=2,
-                        ),
                         dbc.Col(
                             fig_size_controls(
                                 "par-pca",
@@ -796,10 +749,16 @@ class ParallelConditionsModule:
                                 default_height=EXPORT_H,
                                 heading="PCA size (px)",
                             ),
-                            md=6,
+                            md=3,
                         ),
                     ],
-                    className="g-2 mb-2",
+                    className="g-2 mb-1",
+                ),
+                html.P(
+                    "Closest: non-subset samples in the LC cluster nearest that level. "
+                    "Unique closest: closest of this level minus samples also closest to "
+                    "another level (if that set is empty, all closest are shown).",
+                    className="text-muted small",
                 ),
                 html.Div(id="par-pca-panels"),
                 html.Div(
@@ -812,87 +771,18 @@ class ParallelConditionsModule:
                     ],
                     className="border rounded p-2 bg-light mb-2",
                 ),
-                html.Hr(),
-                dcc.Tabs(
-                    id="par-analysis-tabs",
-                    value="enrich",
-                    children=[
-                        dcc.Tab(
-                            label="Condition enrichment",
-                            value="enrich",
-                            children=[
-                html.H6("Condition enrichment", className="mt-2"),
+                dcc.Store(id="par-cache"),
+            ]
+        )
+
+    def level2(self):
+        return html.Div(
+            [
+                html.H6("Pooled gene gradients"),
                 html.P(
-                    "Categorical: stacked entry fractions per closest or uniquely-close "
-                    "level. Rankable: Pearson and Spearman of ranked metadata vs "
-                    "level rank.",
-                    className="text-muted small",
-                ),
-                dbc.Row(
-                    [
-                        dbc.Col(
-                            [
-                                html.Label("Columns"),
-                                dcc.RadioItems(
-                                    id="par-enr-kind",
-                                    options=[
-                                        {"label": " categorical", "value": "cat"},
-                                        {"label": " rankable", "value": "rank"},
-                                    ],
-                                    value="cat",
-                                    inline=True,
-                                ),
-                            ],
-                            md=3,
-                        ),
-                        dbc.Col(
-                            [
-                                html.Label("Grouping"),
-                                dcc.RadioItems(
-                                    id="par-enr-mode",
-                                    options=[
-                                        {"label": " closest", "value": "closest"},
-                                        {"label": " uniquely-close", "value": "unique"},
-                                    ],
-                                    value="closest",
-                                    inline=True,
-                                ),
-                            ],
-                            md=3,
-                        ),
-                        dbc.Col(
-                            [
-                                html.Label("Metadata columns"),
-                                dcc.Dropdown(id="par-enr-cols", multi=True),
-                            ],
-                            md=4,
-                        ),
-                        dbc.Col(
-                            dbc.Button(
-                                "Run enrichment",
-                                id="par-enr-run",
-                                color="secondary",
-                                className="mt-4",
-                            ),
-                            md=2,
-                        ),
-                    ],
-                    className="g-2 mb-2",
-                ),
-                html.Div(id="par-enr-status", className="text-muted small mb-2"),
-                dcc.Graph(id="par-enr-fig", figure={}, config=_PAR_GRAD_CONFIG),
-                            ],
-                        ),
-                        dcc.Tab(
-                            label="Pooled gene gradients",
-                            value="gradients",
-                            children=[
-                html.H6("Pooled gene gradients", className="mt-2"),
-                html.P(
-                    "Run on closest or uniquely-close samples. Shown: Pearson and "
-                    "Spearman vs dynamic range, and each measure as levels (x) vs "
-                    "closest (y). Select a gene to overlay biofilm replicate lines "
-                    "with closest mean ± std (grey points).",
+                    "Run on closest or uniquely-close samples, then click a gene or "
+                    "pick IDs below for profiles. Shown: Pearson and Spearman vs "
+                    "dynamic range, and each measure as levels (x) vs closest (y).",
                     className="text-muted small",
                 ),
                 dbc.Row(
@@ -913,7 +803,7 @@ class ParallelConditionsModule:
                             dbc.Button(
                                 "Run pooled gradients",
                                 id="par-grad-run",
-                                color="secondary",
+                                color="primary",
                             ),
                             md=3,
                         ),
@@ -1033,51 +923,7 @@ class ParallelConditionsModule:
                     ],
                     className="g-2 mb-2",
                 ),
-                html.H6("Selected gene profiles", className="mt-3"),
-                html.P(
-                    "Click a gene or pick IDs. Biofilm lines follow the replicate "
-                    "column (same as gene gradients). Closest samples are grey; "
-                    "closest mean is black with std bars.",
-                    className="text-muted small",
-                ),
-                dbc.Row(
-                    [
-                        dbc.Col(
-                            [
-                                html.Label("Replicate column (levels)"),
-                                dcc.Dropdown(id="par-grad-rep-col", clearable=True),
-                            ],
-                            md=3,
-                        ),
-                        dbc.Col(
-                            dcc.Dropdown(
-                                id="par-grad-genes",
-                                multi=True,
-                                placeholder="Type 2+ characters to search genes…",
-                            ),
-                            md=6,
-                        ),
-                        dbc.Col(
-                            dbc.Button(
-                                "Clear selected genes",
-                                id="par-grad-clear",
-                                color="secondary",
-                                outline=True,
-                                size="sm",
-                            ),
-                            md=3,
-                        ),
-                    ],
-                    className="g-2 mb-2",
-                ),
-                html.Div(id="par-grad-profiles-status", className="text-muted small mb-1"),
-                dcc.Graph(
-                    id="par-grad-profiles",
-                    figure={},
-                    config=_PAR_GRAD_CONFIG,
-                ),
-                html.Hr(),
-                html.H6("Save Celov"),
+                html.H6("Save Celov", className="mt-2"),
                 dbc.Row(
                     [
                         dbc.Col(
@@ -1149,13 +995,163 @@ class ParallelConditionsModule:
                 html.Div(id="par-grad-celov-status", className="text-muted small mb-2"),
                 dcc.Store(id="par-grad-cache"),
                 dcc.Store(id="par-grad-selected", data=[]),
+                html.Hr(),
+                html.H6("Selected gene profiles"),
+                html.P(
+                    "Closest samples are grey; closest mean is black with std bars. "
+                    "Replicate column is optional — if set, biofilm lines are split by "
+                    "that column.",
+                    className="text-muted small",
+                ),
+                dbc.Row(
+                    [
+                        dbc.Col(
+                            [
+                                html.Label("Selected genes"),
+                                dcc.Dropdown(
+                                    id="par-grad-genes",
+                                    multi=True,
+                                    placeholder="Type 2+ characters to search genes…",
+                                ),
                             ],
+                            md=6,
+                        ),
+                        dbc.Col(
+                            [
+                                html.Label("Replicate column (optional)"),
+                                dcc.Dropdown(id="par-grad-rep-col", clearable=True),
+                            ],
+                            md=3,
+                        ),
+                        dbc.Col(
+                            [
+                                html.Br(),
+                                dbc.Button(
+                                    "Clear selected genes",
+                                    id="par-grad-clear",
+                                    color="secondary",
+                                    outline=True,
+                                    size="sm",
+                                ),
+                            ],
+                            md=3,
                         ),
                     ],
+                    className="g-2 mb-2",
                 ),
-                dcc.Store(id="par-cache"),
+                html.Div(id="par-grad-profiles-status", className="text-muted small mb-1"),
+                dcc.Graph(
+                    id="par-grad-profiles",
+                    figure={},
+                    config=_PAR_GRAD_CONFIG,
+                ),
             ]
         )
+
+    def level3(self):
+        return html.Div(
+            [
+                html.P(
+                    "Enrichment uses closest or uniquely-close samples from the "
+                    "per-level clustering in Samples.",
+                    className="text-muted small",
+                ),
+                html.H6("Categorical"),
+                html.P(
+                    "Stacked entry fractions per closest or uniquely-close level.",
+                    className="text-muted small",
+                ),
+                dbc.Row(
+                    [
+                        dbc.Col(
+                            [
+                                html.Label("Grouping"),
+                                dcc.RadioItems(
+                                    id="par-enr-cat-mode",
+                                    options=[
+                                        {"label": " closest", "value": "closest"},
+                                        {"label": " uniquely-close", "value": "unique"},
+                                    ],
+                                    value="closest",
+                                    inline=True,
+                                ),
+                            ],
+                            md=3,
+                        ),
+                        dbc.Col(
+                            [
+                                html.Label("Metadata columns"),
+                                dcc.Dropdown(id="par-enr-cat-cols", multi=True),
+                            ],
+                            md=5,
+                        ),
+                        dbc.Col(
+                            [
+                                html.Br(),
+                                dbc.Button(
+                                    "Run enrichment",
+                                    id="par-enr-cat-run",
+                                    color="primary",
+                                ),
+                            ],
+                            md=2,
+                        ),
+                    ],
+                    className="g-2 mb-2",
+                ),
+                dcc.Graph(id="par-enr-cat-fig", figure={}, config=_PAR_GRAD_CONFIG),
+                html.Div(id="par-enr-cat-status", className="text-muted small mb-3"),
+                html.Hr(),
+                html.H6("Rankable"),
+                html.P(
+                    "Pearson and Spearman of ranked metadata vs level rank.",
+                    className="text-muted small",
+                ),
+                dbc.Row(
+                    [
+                        dbc.Col(
+                            [
+                                html.Label("Grouping"),
+                                dcc.RadioItems(
+                                    id="par-enr-rank-mode",
+                                    options=[
+                                        {"label": " closest", "value": "closest"},
+                                        {"label": " uniquely-close", "value": "unique"},
+                                    ],
+                                    value="closest",
+                                    inline=True,
+                                ),
+                            ],
+                            md=3,
+                        ),
+                        dbc.Col(
+                            [
+                                html.Label("Metadata columns"),
+                                dcc.Dropdown(id="par-enr-rank-cols", multi=True),
+                            ],
+                            md=5,
+                        ),
+                        dbc.Col(
+                            [
+                                html.Br(),
+                                dbc.Button(
+                                    "Run enrichment",
+                                    id="par-enr-rank-run",
+                                    color="primary",
+                                ),
+                            ],
+                            md=2,
+                        ),
+                    ],
+                    className="g-2 mb-2",
+                ),
+                dcc.Graph(id="par-enr-rank-fig", figure={}, config=_PAR_GRAD_CONFIG),
+                html.Div(id="par-enr-rank-status", className="text-muted small mb-3"),
+            ]
+        )
+
+    def layout(self):
+        return html.Div([self.level1(), self.level2(), self.level3()])
 
     def register_callbacks(self, app: Dash) -> None:
         @app.callback(
@@ -1235,13 +1231,14 @@ class ParallelConditionsModule:
             Output("par-summary", "children"),
             Input("par-run", "n_clicks"),
             State("session-store", "data"),
+            State("project-store", "data"),
             State("par-subset-col", "value"),
             State("par-subset-val", "value"),
             State("par-order-col", "value"),
             State("par-levels", "value"),
             prevent_initial_call=True,
         )
-        def _run(n_clicks, session_blob, sub_col, sub_val, order_col, levels):
+        def _run(n_clicks, session_blob, project_blob, sub_col, sub_val, order_col, levels):
             session = session_from_store(session_blob)
             if not session.ready:
                 return no_update, session.error or "Load a dataset first.", no_update
@@ -1264,6 +1261,13 @@ class ParallelConditionsModule:
             except Exception as exc:  # noqa: BLE001
                 return no_update, f"Clustering error: {exc}", no_update
             _PAR_RUNTIME.clear()
+            lookup = None
+            locus = _locus_path_from_session(session_blob, project_blob)
+            if locus:
+                try:
+                    lookup = load_locus_lookup(locus)
+                except Exception:  # noqa: BLE001
+                    lookup = None
             _PAR_RUNTIME.update(
                 {
                     "summary": summary,
@@ -1277,6 +1281,7 @@ class ParallelConditionsModule:
                     "is_bio": is_bio,
                     "levels": levels,
                     "order_col": order_col,
+                    "locus_lookup": lookup,
                 }
             )
             return (
@@ -1320,24 +1325,10 @@ class ParallelConditionsModule:
             Input("par-pca-y", "value"),
             Input("par-pca-z", "value"),
             Input("par-pca-hl", "value"),
-            Input("par-pca-color", "value"),
-            Input("par-pca-shape", "value"),
-            Input("par-pca-size", "value"),
             Input("par-pca-fig-w", "value"),
             Input("par-pca-fig-h", "value"),
         )
-        def _plot_par_pca(
-            cache,
-            x_col,
-            y_col,
-            z_col,
-            hl_mode,
-            hl_color,
-            hl_shape,
-            hl_size,
-            fig_w,
-            fig_h,
-        ):
+        def _plot_par_pca(cache, x_col, y_col, z_col, hl_mode, fig_w, fig_h):
             if not cache or "score_df" not in _PAR_RUNTIME:
                 return html.P(
                     "Run per-level clustering to show PCA.",
@@ -1386,9 +1377,9 @@ class ParallelConditionsModule:
                     x_col=x_col,
                     y_col=y_col,
                     z_col=z_col,
-                    hl_color=hl_color or "crimson",
-                    hl_shape=hl_shape or "circle",
-                    hl_size=float(hl_size if hl_size is not None else 12),
+                    hl_color="crimson",
+                    hl_shape="circle",
+                    hl_size=12.0,
                     title=_plotly_title(
                         f"PCA · {level}",
                         f"{hl_name} n={len(hl_map.get(level) or [])}",
@@ -1443,35 +1434,48 @@ class ParallelConditionsModule:
             return sample_detail_table(row)
 
         @app.callback(
-            Output("par-enr-cols", "options"),
-            Output("par-enr-cols", "value"),
+            Output("par-enr-cat-cols", "options"),
+            Output("par-enr-cat-cols", "value"),
             Input("session-store", "data"),
             Input("par-cache", "data"),
-            Input("par-enr-kind", "value"),
-            State("par-enr-cols", "value"),
+            State("par-enr-cat-cols", "value"),
         )
-        def _enr_cols(session_blob, cache, kind, current):
+        def _enr_cat_cols(session_blob, cache, current):
             cols = list((session_blob or {}).get("meta_columns", []))
             opts = [{"label": c, "value": c} for c in cols]
-            pref_src = DEFAULT_NUM_COLS if kind == "rank" else DEFAULT_CAT_COLS
-            pref = present_cols(cols, pref_src) or cols
-            triggered = callback_context.triggered_id
-            if triggered == "par-enr-kind" or not current:
+            pref = present_cols(cols, DEFAULT_CAT_COLS) or cols
+            if not current:
                 value = list(pref)
             else:
                 value = [c for c in current if c in cols]
             return opts, value
 
         @app.callback(
-            Output("par-enr-fig", "figure"),
-            Output("par-enr-status", "children"),
-            Input("par-enr-run", "n_clicks"),
-            State("par-enr-cols", "value"),
-            State("par-enr-mode", "value"),
-            State("par-enr-kind", "value"),
+            Output("par-enr-rank-cols", "options"),
+            Output("par-enr-rank-cols", "value"),
+            Input("session-store", "data"),
+            Input("par-cache", "data"),
+            State("par-enr-rank-cols", "value"),
+        )
+        def _enr_rank_cols(session_blob, cache, current):
+            cols = list((session_blob or {}).get("meta_columns", []))
+            opts = [{"label": c, "value": c} for c in cols]
+            pref = present_cols(cols, DEFAULT_NUM_COLS) or cols
+            if not current:
+                value = list(pref)
+            else:
+                value = [c for c in current if c in cols]
+            return opts, value
+
+        @app.callback(
+            Output("par-enr-cat-fig", "figure"),
+            Output("par-enr-cat-status", "children"),
+            Input("par-enr-cat-run", "n_clicks"),
+            State("par-enr-cat-cols", "value"),
+            State("par-enr-cat-mode", "value"),
             prevent_initial_call=True,
         )
-        def _enr(n_clicks, cols, mode, kind):
+        def _enr_cat(n_clicks, cols, mode):
             empty = go.Figure()
             if "closest" not in _PAR_RUNTIME:
                 return empty, "Run per-level clustering first."
@@ -1486,29 +1490,15 @@ class ParallelConditionsModule:
             if not use:
                 return empty, "Selected columns are not in metadata."
             df = meta.copy()
-            df["_closest"] = assign_region_labels(df.index, _PAR_RUNTIME.get("closest") or {}, levels)
-            df["_unique"] = assign_region_labels(df.index, _PAR_RUNTIME.get("unique") or {}, levels)
+            df["_closest"] = assign_region_labels(
+                df.index, _PAR_RUNTIME.get("closest") or {}, levels
+            )
+            df["_unique"] = assign_region_labels(
+                df.index, _PAR_RUNTIME.get("unique") or {}, levels
+            )
             label = "uniquely-close" if mode == "unique" else "closest"
+            region_col = "_unique" if mode == "unique" else "_closest"
             try:
-                if kind == "rank":
-                    target = "_unique" if mode == "unique" else "_closest"
-                    mats = corr_vs_region_rank(df, use, [target], levels)
-                    for mat in mats.values():
-                        mat.columns = [label]
-                    fig = heatmap_matrix_fig(
-                        [mats["Pearson"], mats["Spearman"]],
-                        ["Pearson", "Spearman"],
-                        title=_plotly_title(
-                            "Rankable metadata vs level rank",
-                            f"{label} samples",
-                        ),
-                        zmin=-1,
-                        zmax=1,
-                        colorscale="RdBu_r",
-                    )
-                    n = int(df[target].notna().sum())
-                    return fig, f"{len(use)} rankable columns vs {label} level rank ({n} labeled samples)."
-                region_col = "_unique" if mode == "unique" else "_closest"
                 fig = entry_fractions_fig(
                     df,
                     region_col,
@@ -1521,6 +1511,61 @@ class ParallelConditionsModule:
                 )
                 n = int(df[region_col].notna().sum())
                 return fig, f"{n} samples labeled as {label}."
+            except Exception as exc:  # noqa: BLE001
+                return empty, f"Enrichment error: {exc}"
+
+        @app.callback(
+            Output("par-enr-rank-fig", "figure"),
+            Output("par-enr-rank-status", "children"),
+            Input("par-enr-rank-run", "n_clicks"),
+            State("par-enr-rank-cols", "value"),
+            State("par-enr-rank-mode", "value"),
+            prevent_initial_call=True,
+        )
+        def _enr_rank(n_clicks, cols, mode):
+            empty = go.Figure()
+            if "closest" not in _PAR_RUNTIME:
+                return empty, "Run per-level clustering first."
+            cols = [c for c in (cols or []) if c]
+            if not cols:
+                return empty, "Select metadata columns."
+            meta = _PAR_RUNTIME["meta"]
+            levels = list(_PAR_RUNTIME.get("levels") or [])
+            if not levels:
+                return empty, "No levels in the last clustering run."
+            use = [c for c in cols if c in meta.columns]
+            if not use:
+                return empty, "Selected columns are not in metadata."
+            df = meta.copy()
+            df["_closest"] = assign_region_labels(
+                df.index, _PAR_RUNTIME.get("closest") or {}, levels
+            )
+            df["_unique"] = assign_region_labels(
+                df.index, _PAR_RUNTIME.get("unique") or {}, levels
+            )
+            label = "uniquely-close" if mode == "unique" else "closest"
+            target = "_unique" if mode == "unique" else "_closest"
+            try:
+                mats = corr_vs_region_rank(df, use, [target], levels)
+                for mat in mats.values():
+                    mat.columns = [label]
+                fig = heatmap_matrix_fig(
+                    [mats["Pearson"], mats["Spearman"]],
+                    ["Pearson", "Spearman"],
+                    title=_plotly_title(
+                        "Rankable metadata vs level rank",
+                        f"{label} samples",
+                    ),
+                    zmin=-1,
+                    zmax=1,
+                    colorscale="RdBu_r",
+                )
+                n = int(df[target].notna().sum())
+                return (
+                    fig,
+                    f"{len(use)} rankable columns vs {label} level rank "
+                    f"({n} labeled samples).",
+                )
             except Exception as exc:  # noqa: BLE001
                 return empty, f"Enrichment error: {exc}"
 
@@ -1626,14 +1671,18 @@ class ParallelConditionsModule:
             Input("par-grad-rho-s", "value"),
             Input("par-grad-dr-s", "value"),
             Input("par-grad-selected", "data"),
+            Input("ds-gene-meta-cols", "value"),
         )
-        def _replot_par_grads(cache, rho_p, dr_p, rho_s, dr_s, selected):
+        def _replot_par_grads(cache, rho_p, dr_p, rho_s, dr_s, selected, gene_meta_cols):
             empty = go.Figure()
             results = _PAR_RUNTIME.get("grad_results")
             if not cache or results is None:
                 return empty, empty, empty, empty
             mark = {str(g) for g in (selected or []) if g}
             mode = cache.get("mode") or "closest"
+            hover_map = gene_meta_hover_map(
+                _PAR_RUNTIME.get("locus_lookup"), list(gene_meta_cols or [])
+            )
             pearson = gradient_scatter_fig(
                 results,
                 "pearson",
@@ -1642,6 +1691,7 @@ class ParallelConditionsModule:
                 title=_plotly_title("Pearson gene gradients", f"{mode} samples"),
                 mark_genes=mark,
                 mark_label="selected" if mark else None,
+                hover_map=hover_map,
             )
             spearman = gradient_scatter_fig(
                 results,
@@ -1651,12 +1701,21 @@ class ParallelConditionsModule:
                 title=_plotly_title("Spearman gene gradients", f"{mode} samples"),
                 mark_genes=mark,
                 mark_label="selected" if mark else None,
+                hover_map=hover_map,
             )
             cmp_p = biofilm_vs_close_fig(
-                results, "pearson", mark_genes=mark, mark_label="selected" if mark else None
+                results,
+                "pearson",
+                mark_genes=mark,
+                mark_label="selected" if mark else None,
+                hover_map=hover_map,
             )
             cmp_s = biofilm_vs_close_fig(
-                results, "spearman", mark_genes=mark, mark_label="selected" if mark else None
+                results,
+                "spearman",
+                mark_genes=mark,
+                mark_label="selected" if mark else None,
+                hover_map=hover_map,
             )
             return pearson, spearman, cmp_p, cmp_s
 

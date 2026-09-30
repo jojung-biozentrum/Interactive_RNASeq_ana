@@ -8,9 +8,9 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from scipy.stats import pearsonr, spearmanr
+from scipy.stats import false_discovery_control, fisher_exact, mannwhitneyu, pearsonr, spearmanr
 from sklearn.linear_model import LinearRegression
-from sklearn.metrics import adjusted_rand_score
+from sklearn.metrics import adjusted_rand_score, completeness_score, homogeneity_score
 
 from src.GUI.components.controls import apply_export_layout
 
@@ -81,6 +81,26 @@ def binary_mask(series: pd.Series, positive) -> np.ndarray:
     return (series.astype(str) == str(positive)).to_numpy()
 
 
+def end_cluster_labels(x: np.ndarray, is_pos: np.ndarray) -> np.ndarray:
+    """One-sided threshold covering all positives (same rule as notebook ARI)."""
+    x = np.asarray(x, dtype=float)
+    is_pos = np.asarray(is_pos, dtype=bool)
+    if np.median(x[is_pos]) >= np.median(x[~is_pos]):
+        return np.where(x >= x[is_pos].min(), "pos-end", "other")
+    return np.where(x <= x[is_pos].max(), "pos-end", "other")
+
+
+def end_separation_scores(x: np.ndarray, is_pos: np.ndarray) -> dict[str, float]:
+    """ARI / homogeneity / completeness of the end-split vs a binary label."""
+    pred = end_cluster_labels(x, is_pos)
+    true = np.where(is_pos, "pos", "other")
+    return {
+        "ARI": float(adjusted_rand_score(true, pred)),
+        "homogeneity": float(homogeneity_score(true, pred)),
+        "completeness": float(completeness_score(true, pred)),
+    }
+
+
 def pc_separation_ari(
     score_df: pd.DataFrame,
     label_col: str,
@@ -96,13 +116,49 @@ def pc_separation_ari(
         col = f"PC{i}"
         if col not in score_df.columns:
             break
-        x = score_df[col].to_numpy(dtype=float)
-        if np.median(x[is_pos]) >= np.median(x[~is_pos]):
-            pred = np.where(x >= x[is_pos].min(), "pos-end", "other")
-        else:
-            pred = np.where(x <= x[is_pos].max(), "pos-end", "other")
-        rows.append({"PC": i, "ARI": float(adjusted_rand_score(is_pos, pred))})
+        scores = end_separation_scores(score_df[col].to_numpy(dtype=float), is_pos)
+        rows.append({"PC": i, **scores})
     return pd.DataFrame(rows)
+
+
+def cat_end_mats(
+    df: pd.DataFrame,
+    cat_cols: list[str],
+    axes: list[str],
+    exclude: set[str] | None = None,
+) -> dict[str, pd.DataFrame]:
+    """Per (column, entry) × axis: ARI, homogeneity, completeness of the end-split."""
+    exclude = EXCLUDE_ENTRIES if exclude is None else set(exclude)
+    row_labels: list[tuple[str, str]] = []
+    for col in cat_cols:
+        if col not in df.columns:
+            continue
+        s = df[col].fillna("none")
+        for entry in sorted(s.unique(), key=str):
+            if str(entry) in exclude:
+                continue
+            row_labels.append((col, str(entry)))
+    labels = [f"{c} | {e}" for c, e in row_labels]
+    out = {
+        name: pd.DataFrame(index=labels, columns=axes, dtype=float)
+        for name in ("ARI", "homogeneity", "completeness")
+    }
+    for ax_name in axes:
+        y = pd.to_numeric(df[ax_name], errors="coerce")
+        for col, entry in row_labels:
+            lab = f"{col} | {entry}"
+            s = df[col].fillna("none").astype(str)
+            is_pos = s.eq(entry).to_numpy()
+            mask = y.notna().to_numpy()
+            if is_pos[mask].sum() == 0 or (~is_pos[mask]).sum() == 0:
+                continue
+            try:
+                scores = end_separation_scores(y[mask].to_numpy(dtype=float), is_pos[mask])
+            except Exception:  # noqa: BLE001
+                continue
+            for name, val in scores.items():
+                out[name].loc[lab, ax_name] = val
+    return out
 
 
 def ari_figure(sep_df: pd.DataFrame, title: str | dict) -> go.Figure:
@@ -525,6 +581,164 @@ def _apply_op(series: pd.Series, op: str, thr) -> pd.Series:
     if op == ">":
         return (num > t) & num.notna()
     raise ValueError(f"Unknown operator {op!r}")
+
+
+def fisher_bin_enrichment(
+    meta: pd.DataFrame,
+    ids_a,
+    ids_b,
+    columns: list[str],
+) -> pd.DataFrame:
+    """Per categorical entry: 2×2 Fisher exact of entry×(Bin A vs Bin B), BH-adjusted."""
+    idx_a = pd.Index([str(i) for i in ids_a])
+    idx_b = pd.Index([str(i) for i in ids_b])
+    meta = meta.copy()
+    meta.index = meta.index.astype(str)
+    rows = []
+    for col in columns:
+        if col not in meta.columns:
+            continue
+        s = meta[col].fillna("NA").astype(str)
+        in_a = s.index.isin(idx_a)
+        in_b = s.index.isin(idx_b)
+        for entry in sorted(s.unique(), key=lambda x: (x == "NA", str(x).lower())):
+            a_yes = int(((s == entry) & in_a).sum())
+            a_no = int(((s != entry) & in_a).sum())
+            b_yes = int(((s == entry) & in_b).sum())
+            b_no = int(((s != entry) & in_b).sum())
+            if a_yes + b_yes == 0:
+                continue
+            odds, p = fisher_exact([[a_yes, b_yes], [a_no, b_no]], alternative="two-sided")
+            rows.append(
+                {
+                    "column": col,
+                    "entry": entry,
+                    "n_A": a_yes,
+                    "n_B": b_yes,
+                    "odds_ratio": float(odds) if np.isfinite(odds) else np.nan,
+                    "p": float(p),
+                }
+            )
+    out = pd.DataFrame(rows)
+    if out.empty:
+        return out
+    out["padj"] = false_discovery_control(out["p"].fillna(1.0).to_numpy())
+    return out.sort_values(["padj", "p", "column", "entry"]).reset_index(drop=True)
+
+
+def fisher_odds_fig(df: pd.DataFrame, *, title: str | dict) -> go.Figure:
+    """Horizontal odds-ratio bars; n / p / padj only in hover."""
+    fig = go.Figure()
+    if df is None or df.empty or "odds_ratio" not in df.columns:
+        fig.add_annotation(text="No Fisher odds ratios to plot.", showarrow=False)
+        fig.update_xaxes(visible=False)
+        fig.update_yaxes(visible=False)
+        return fig
+    plot = df.copy()
+    plot["label"] = plot["column"].astype(str) + " | " + plot["entry"].astype(str)
+    plot = plot.sort_values("odds_ratio", ascending=True, na_position="first")
+    # log-scale bars need finite positive x; show inf/0 as missing
+    x = plot["odds_ratio"].to_numpy(dtype=float)
+    x_plot = np.where(np.isfinite(x) & (x > 0), x, np.nan)
+    padj = plot["padj"].to_numpy(dtype=float) if "padj" in plot.columns else np.full(len(plot), np.nan)
+    # color by −log10(padj); grey if missing
+    with np.errstate(divide="ignore", invalid="ignore"):
+        neglog = np.where(np.isfinite(padj) & (padj > 0), -np.log10(padj), 0.0)
+    custom = np.column_stack(
+        [
+            plot["n_A"].to_numpy(dtype=float),
+            plot["n_B"].to_numpy(dtype=float),
+            neglog,
+            x,
+        ]
+    )
+    fig.add_trace(
+        go.Bar(
+            x=x_plot,
+            y=plot["label"].tolist(),
+            orientation="h",
+            marker=dict(
+                color=neglog,
+                colorscale="YlOrRd",
+                cmin=0,
+                colorbar=dict(title="−log10(padj)", thickness=14),
+            ),
+            customdata=custom,
+            hovertemplate=(
+                "%{y}<br>"
+                "odds ratio=%{customdata[3]:.3g}<br>"
+                "n_A=%{customdata[0]:.0f}, n_B=%{customdata[1]:.0f}<br>"
+                "−log10(padj)=%{customdata[2]:.3g}"
+                "<extra></extra>"
+            ),
+            showlegend=False,
+        )
+    )
+    fig.add_vline(x=1, line_width=1, line_dash="dot", line_color="#666666")
+    title_dict = title if isinstance(title, dict) else dict(text=str(title))
+    title_lines = str(title_dict.get("text", "")).count("<br>") + 1
+    fig.update_layout(
+        title=title_dict,
+        xaxis_title="odds ratio (Bin A vs Bin B)",
+        xaxis_type="log",
+        yaxis_title="",
+        bargap=0.15,
+    )
+    n_rows = len(plot)
+    height = min(720, max(280, 28 * n_rows + 120))
+    apply_export_layout(
+        fig,
+        title_lines=title_lines,
+        legend=False,
+        height=height,
+        bottom=50,
+        uirevision="hc-fisher-odds",
+    )
+    return fig
+
+
+def mwu_bin_enrichment(
+    meta: pd.DataFrame,
+    ids_a,
+    ids_b,
+    columns: list[str],
+) -> pd.DataFrame:
+    """Mann–Whitney U of numeric / ranked metadata between Bin A and Bin B, BH-adjusted."""
+    idx_a = [str(i) for i in ids_a]
+    idx_b = [str(i) for i in ids_b]
+    meta = meta.copy()
+    meta.index = meta.index.astype(str)
+    rows = []
+    for col in columns:
+        if col not in meta.columns:
+            continue
+        x = to_numeric_rank(meta[col], col)
+        xa = x.reindex(idx_a).dropna().astype(float)
+        xb = x.reindex(idx_b).dropna().astype(float)
+        if len(xa) < 2 or len(xb) < 2:
+            continue
+        if xa.nunique() < 1 or xb.nunique() < 1:
+            continue
+        try:
+            stat, p = mannwhitneyu(xa, xb, alternative="two-sided")
+        except ValueError:
+            continue
+        rows.append(
+            {
+                "column": col,
+                "median_A": float(xa.median()),
+                "median_B": float(xb.median()),
+                "n_A": int(len(xa)),
+                "n_B": int(len(xb)),
+                "U": float(stat),
+                "p": float(p),
+            }
+        )
+    out = pd.DataFrame(rows)
+    if out.empty:
+        return out
+    out["padj"] = false_discovery_control(out["p"].fillna(1.0).to_numpy())
+    return out.sort_values(["padj", "p", "column"]).reset_index(drop=True)
 
 
 def resolve_condition_bins(
