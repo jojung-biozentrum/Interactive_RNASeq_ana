@@ -9,7 +9,6 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from scipy.stats import false_discovery_control, fisher_exact, mannwhitneyu, pearsonr, spearmanr
-from sklearn.linear_model import LinearRegression
 from sklearn.metrics import adjusted_rand_score, completeness_score, homogeneity_score
 
 from src.GUI.components.controls import apply_export_layout
@@ -44,24 +43,6 @@ DEFAULT_CAT_COLS = [
     "Experiment",
 ]
 EXCLUDE_ENTRIES = {"Biofilm", "region1", "region2", "region3", "region4"}
-
-SKIP_COLS = {
-    "fileName",
-    "FileName",
-    "sampleNr",
-    "indexWell",
-    "idx1",
-    "idx2",
-    "Well",
-    "barcodeName",
-    "barcode read in fastq (5′->3′)",
-    "ConditionNr",
-    "kdlibNr",
-    "BiologicalConditionNr",
-    "sample_id",
-    "sampleID",
-}
-NUM_FRAC_THR = 0.9
 
 
 def present_cols(available: Iterable[str], preferred: list[str]) -> list[str]:
@@ -159,59 +140,6 @@ def cat_end_mats(
             for name, val in scores.items():
                 out[name].loc[lab, ax_name] = val
     return out
-
-
-def ari_figure(sep_df: pd.DataFrame, title: str | dict) -> go.Figure:
-    fig = go.Figure()
-    if sep_df is None or sep_df.empty:
-        fig.add_annotation(text="No ARI results", showarrow=False)
-        return fig
-    fig.add_trace(
-        go.Scatter(
-            x=sep_df["PC"],
-            y=sep_df["ARI"],
-            mode="lines+markers",
-            name="ARI",
-        )
-    )
-    ymin = float(sep_df["ARI"].min())
-    fig.update_layout(
-        title=title,
-        xaxis_title="PC",
-        yaxis_title="ARI",
-        yaxis=dict(range=[ymin, 1.0] if np.isfinite(ymin) else None),
-        xaxis=dict(
-            tickmode="array",
-            tickvals=sep_df["PC"].tolist(),
-            ticktext=[f"PC{i}" for i in sep_df["PC"]],
-        ),
-        showlegend=False,
-    )
-    apply_export_layout(fig, title_lines=2, legend=False, uirevision="pca-ari")
-    return fig
-
-
-def biofilm_axis_scores(
-    score_df: pd.DataFrame,
-    label_col: str,
-    n_pcs_axis: int,
-    axis_name: str = "Biofilm axis",
-) -> tuple[pd.Series, np.ndarray]:
-    """OLS of label (0/1) on the first n PCs; L2-normalized coefficients; project scores."""
-    pc_cols = [f"PC{i}" for i in range(1, int(n_pcs_axis) + 1)]
-    missing = [c for c in pc_cols if c not in score_df.columns]
-    if missing:
-        raise ValueError(f"Missing PCs for axis: {missing}")
-    X = score_df[pc_cols].to_numpy(dtype=float)
-    y = pd.to_numeric(score_df[label_col], errors="coerce").to_numpy()
-    if np.isnan(y).all():
-        y = (score_df[label_col].astype(str).str.lower().isin(["true", "1", "yes"])).astype(float).to_numpy()
-    w = LinearRegression().fit(X, y).coef_
-    nrm = float(np.linalg.norm(w))
-    if nrm <= 0:
-        raise ValueError("Axis coefficients have zero norm.")
-    w = w / nrm
-    return pd.Series(X @ w, index=score_df.index, name=axis_name), w
 
 
 def corr_vs_axes(df: pd.DataFrame, meta_cols: list[str], axes: list[str]) -> dict[str, pd.DataFrame]:
@@ -541,48 +469,6 @@ def entry_fractions_fig(
     return fig
 
 
-def classify_meta_columns(meta: pd.DataFrame) -> dict:
-    """≥90% numeric → threshold filters; otherwise tickable categorical entries."""
-    info = {}
-    n = len(meta)
-    for c in meta.columns:
-        if c in SKIP_COLS:
-            continue
-        s = meta[c]
-        nuniq = int(s.nunique(dropna=True))
-        if nuniq <= 1:
-            continue
-        num = pd.to_numeric(s, errors="coerce")
-        n_nonnull = int(s.notna().sum())
-        frac_num = float(num.notna().sum()) / max(n_nonnull, 1)
-        if frac_num >= NUM_FRAC_THR:
-            info[c] = {
-                "kind": "num",
-                "vmin": float(num.min()),
-                "vmax": float(num.max()),
-                "median": float(num.median()),
-            }
-            continue
-        if nuniq > min(200, max(50, int(0.4 * n))):
-            continue
-        vals = sorted(
-            s.fillna("NA").astype(str).unique(),
-            key=lambda x: (x == "NA", x.lower()),
-        )
-        info[c] = {"kind": "cat", "entries": vals}
-    return info
-
-
-def _apply_op(series: pd.Series, op: str, thr) -> pd.Series:
-    num = pd.to_numeric(series, errors="coerce")
-    t = float(thr)
-    if op == "<":
-        return (num < t) & num.notna()
-    if op == ">":
-        return (num > t) & num.notna()
-    raise ValueError(f"Unknown operator {op!r}")
-
-
 def fisher_bin_enrichment(
     meta: pd.DataFrame,
     ids_a,
@@ -739,84 +625,6 @@ def mwu_bin_enrichment(
         return out
     out["padj"] = false_discovery_control(out["p"].fillna(1.0).to_numpy())
     return out.sort_values(["padj", "p", "column"]).reset_index(drop=True)
-
-
-def resolve_condition_bins(
-    meta: pd.DataFrame,
-    col_info: dict,
-    filters_a: dict,
-    mode_b: str | dict,
-    filters_b: dict | None = None,
-) -> tuple[pd.Index, pd.Index, str]:
-    """AND active column filters. ``mode_b`` is ``b`` / ``subset`` or ``rest`` / ``~treatment``."""
-    filters_b = filters_b or {}
-
-    def _mode(col: str) -> str:
-        if isinstance(mode_b, dict):
-            raw = mode_b.get(col, "rest")
-        else:
-            raw = mode_b
-        return "rest" if str(raw) in {"rest", "~treatment", "not_treatment", "~"} else "subset"
-
-    active = []
-    for c, fa in (filters_a or {}).items():
-        if c not in col_info:
-            continue
-        if col_info[c]["kind"] == "cat":
-            if fa:
-                active.append(c)
-        elif fa and fa.get("enabled"):
-            active.append(c)
-    if not active:
-        raise ValueError("Activate at least one column in group A / treatment.")
-
-    mask_a = pd.Series(True, index=meta.index)
-    mask_b = pd.Series(True, index=meta.index)
-    title_parts = []
-    for c in active:
-        kind = col_info[c]["kind"]
-        mb = _mode(c)
-        if kind == "cat":
-            a_vals = set(filters_a[c])
-            all_vals = set(col_info[c]["entries"])
-            remaining = sorted(all_vals - a_vals, key=lambda x: (x == "NA", x.lower()))
-            if mb == "rest":
-                b_vals = set(remaining)
-                b_label = "~treatment"
-            else:
-                b_vals = set(filters_b.get(c) or [])
-                if not b_vals:
-                    raise ValueError(f"{c}: mode B needs selected entries.")
-                if b_vals - set(remaining):
-                    raise ValueError(f"{c}: B may only use entries not in A.")
-                b_label = ",".join(sorted(b_vals))
-            col_s = meta[c].fillna("NA").astype(str)
-            mask_a &= col_s.isin(a_vals)
-            mask_b &= col_s.isin(b_vals)
-            title_parts.append(f"{c}:{{{','.join(sorted(a_vals))}}} vs {{{b_label}}}")
-        else:
-            fa = filters_a[c]
-            a_op, a_thr = fa["op"], fa["value"]
-            mask_a &= _apply_op(meta[c], a_op, a_thr)
-            if mb == "rest":
-                num = pd.to_numeric(meta[c], errors="coerce")
-                mask_b &= num.notna() & ~_apply_op(meta[c], a_op, a_thr)
-                b_label = "~treatment"
-            else:
-                fb = filters_b.get(c) or {}
-                if not fb.get("enabled"):
-                    raise ValueError(f"{c}: B needs an operator and value (or use ~treatment).")
-                mask_b &= _apply_op(meta[c], fb["op"], fb["value"])
-                b_label = f"{fb['op']}{fb['value']}"
-            title_parts.append(f"{c}:{a_op}{a_thr} vs {{{b_label}}}")
-
-    ids_a = meta.index[mask_a]
-    ids_b = meta.index[mask_b]
-    overlap = ids_a.intersection(ids_b)
-    if len(overlap):
-        ids_a = ids_a.difference(overlap)
-        ids_b = ids_b.difference(overlap)
-    return ids_a, ids_b, " | ".join(title_parts)
 
 
 def table_html(df: pd.DataFrame, *, max_rows: int = 40):

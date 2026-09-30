@@ -68,8 +68,6 @@ def create_app(default_project: str | None = None) -> Dash:
 
     by_id = {mod.id: mod for mod in MODULE_REGISTRY}
     method_modules = [by_id[spec["id"]] for spec in LEVEL_METHODS]
-    level2_extra = html.Div()
-    level3 = enrichment_layout()
 
     app.layout = dbc.Container(
         [
@@ -110,7 +108,7 @@ def create_app(default_project: str | None = None) -> Dash:
                 className="mb-3",
             ),
             dbc.Card(dbc.CardBody(dataset_picker_layout()), className="mb-3"),
-            workspace_layout(method_modules, level2_extra, level3),
+            workspace_layout(method_modules, enrichment_layout()),
         ],
         fluid=True,
         className="pb-5",

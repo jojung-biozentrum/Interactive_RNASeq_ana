@@ -1036,12 +1036,6 @@ class GeneGradientsModule:
             ]
         )
 
-    def level3(self):
-        return html.Div()
-
-    def layout(self):
-        return html.Div([self.level1(), self.level2(), self.level3()])
-
     def register_callbacks(self, app: Dash) -> None:
         @app.callback(
             Output("grad-subset-col", "options"),

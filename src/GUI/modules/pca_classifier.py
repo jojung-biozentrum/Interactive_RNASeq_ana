@@ -15,7 +15,6 @@ from src.biocyc.celov_multiomics_post import (
     celov_multiomics_file_generation,
 )
 from src.GUI.components.controls import apply_export_layout
-from src.GUI.components.gene_scores import weighed_genes_from_classifier
 
 
 def fit_pc_classifier(df: pd.DataFrame, y: np.ndarray, n_pcs: int) -> dict | None:
@@ -296,12 +295,3 @@ def save_classifier_celov(
         )
         written.append(path)
     return written
-
-
-def build_weighed_genes(
-    loadings: pd.DataFrame,
-    explained_variance: np.ndarray,
-    coef: np.ndarray,
-    n_pcs: int,
-) -> pd.DataFrame:
-    return weighed_genes_from_classifier(loadings, explained_variance, coef, n_pcs)

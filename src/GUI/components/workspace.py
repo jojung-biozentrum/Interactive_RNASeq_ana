@@ -17,14 +17,14 @@ LEVEL_METHODS = [
 _NO_ENRICHMENT = frozenset({"volcano-condition"})
 
 
-def workspace_layout(method_modules: list, level2_extra, level3) -> html.Div:
+def workspace_layout(method_modules: list, level3) -> html.Div:
     by_id = {m.id: m for m in method_modules}
     l1_children = []
     l2_children = []
     l3_children = []
     for spec in LEVEL_METHODS:
         mod = by_id[spec["id"]]
-        l1 = mod.level1() if hasattr(mod, "level1") else mod.layout()
+        l1 = mod.level1()
         l2 = mod.level2() if hasattr(mod, "level2") else html.Div()
         l3 = mod.level3() if hasattr(mod, "level3") else html.Div()
         visible = {} if spec["id"] == "pca" else {"display": "none"}
@@ -64,7 +64,7 @@ def workspace_layout(method_modules: list, level2_extra, level3) -> html.Div:
                 children=[
                     html.H5("2. Genes", className="ws-section-title"),
                     html.P("(optional)", className="text-muted small mb-2"),
-                    html.Div(id="ws-level-2", children=l2_children + [level2_extra]),
+                    html.Div(id="ws-level-2", children=l2_children),
                 ],
             ),
             html.Div(

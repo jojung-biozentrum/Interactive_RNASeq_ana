@@ -13,7 +13,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from sklearn.decomposition import PCA
 
-from src.GUI.components.gene_scores import weighed_genes_from_pc
+from src.GUI.components.gene_scores import weighed_genes_from_classifier, weighed_genes_from_pc
 from src.GUI.project import resolve_celov_id_col
 
 from ..components.controls import (
@@ -49,7 +49,6 @@ from .condition_enrichment import (
 )
 from .pca_classifier import (
     add_decision_boundary,
-    build_weighed_genes,
     classifier_axis_scores,
     classifier_performance,
     encode_binary_labels,
@@ -359,7 +358,7 @@ def _ranked_expr_gene_ids(source, pc, topn, side, clf_cache) -> tuple[list[str],
         if clf_cache and clf_cache.get("w_gene") and "loadings" in _PCA_RUNTIME:
             try:
                 n_pcs = int(clf_cache.get("gene_pcs") or 5)
-                weighed = build_weighed_genes(
+                weighed = weighed_genes_from_classifier(
                     _PCA_RUNTIME["loadings"],
                     _PCA_RUNTIME["explained_variance"],
                     np.asarray(clf_cache["w_gene"], dtype=float),
@@ -1026,36 +1025,8 @@ class PCAModule:
                     className="text-muted small mb-2",
                 ),
                 _gene_expr_picker("pca-expr", from_weights=True),
-                html.Div(
-                    [
-                        dcc.Input(id="pca-clf-locus", type="hidden"),
-                        dcc.Input(id="pca-clf-gene-pcs", type="hidden", value=5),
-                        dcc.Input(id="pca-clf-celov-out", type="hidden"),
-                        dcc.RadioItems(id="pca-clf-celov-mode", options=[], value="up_and_down"),
-                        html.Button(id="pca-clf-celov-save", n_clicks=0, style={"display": "none"}),
-                        html.Button(id="pca-clf-locus-browse", n_clicks=0, style={"display": "none"}),
-                        html.Button(id="pca-clf-celov-browse", n_clicks=0, style={"display": "none"}),
-                        html.Div(id="pca-clf-celov-section"),
-                        dcc.Dropdown(id="pca-pc-expr-by"),
-                        dcc.Dropdown(id="pca-pc-expr-genes", multi=True),
-                        dbc.Input(id="pca-pc-expr-topn", type="number", value=20),
-                        dcc.RadioItems(id="pca-pc-expr-side", value="abs"),
-                        dcc.Graph(id="pca-pc-expr-fig", figure=go.Figure()),
-                        html.Div(id="pca-pc-expr-status"),
-                        dcc.Dropdown(id="pca-clf-expr-by"),
-                        dcc.Dropdown(id="pca-clf-expr-genes", multi=True),
-                        dbc.Input(id="pca-clf-expr-topn", type="number", value=20),
-                        dcc.RadioItems(id="pca-clf-expr-side", value="abs"),
-                        dcc.Graph(id="pca-clf-expr-fig", figure=go.Figure()),
-                        html.Div(id="pca-clf-expr-status"),
-                    ],
-                    style={"display": "none"},
-                ),
             ]
         )
-
-    def layout(self):
-        return html.Div([self.level1(), self.level2()])
 
     def register_callbacks(self, app: Dash) -> None:
         @app.callback(
@@ -1243,15 +1214,6 @@ class PCAModule:
             opts = [{"label": v, "value": v} for v in levels]
             value = current if current in levels else (levels[-1] if levels else None)
             return opts, value
-
-        @app.callback(
-            Output("pca-clf-celov-section", "style"),
-            Input("pca-clf-cache", "data"),
-        )
-        def _toggle_celov(clf_cache):
-            if clf_cache:
-                return {"display": "block"}
-            return {"display": "none"}
 
         @app.callback(
             Output("pca-clf-cache", "data", allow_duplicate=True),
@@ -1451,25 +1413,24 @@ class PCAModule:
 
         @app.callback(
             Output("pca-pc-locus", "value"),
-            Output("pca-clf-locus", "value"),
             Input("ds-active", "value"),
             Input("project-store", "data"),
         )
         def _sync_locus_from_active(active, blob):
             if not blob or not active:
-                return "", ""
+                return ""
             name = active if isinstance(active, str) else (active[0] if active else None)
             entry = next(
                 (d for d in blob.get("datasets", []) if d.get("name") == name),
                 None,
             )
             if not entry:
-                return "", ""
+                return ""
             locus = entry.get("locus_lookup") or ""
             root = blob.get("root")
             if locus and root and not Path(locus).is_absolute():
                 locus = str(Path(root) / locus)
-            return locus, locus
+            return locus
 
         @app.callback(
             Output("pca-pc-locus", "value", allow_duplicate=True),
@@ -1538,7 +1499,7 @@ class PCAModule:
                     if not clf_cache or not clf_cache.get("w_gene"):
                         return "Run the linear classifier first."
                     n_pcs = int(clf_cache.get("gene_pcs") or 5)
-                    weighed = build_weighed_genes(
+                    weighed = weighed_genes_from_classifier(
                         _PCA_RUNTIME["loadings"],
                         _PCA_RUNTIME["explained_variance"],
                         np.asarray(clf_cache["w_gene"], dtype=float),
@@ -1574,109 +1535,12 @@ class PCAModule:
                 return f"Celov save error: {exc}"
 
         @app.callback(
-            Output("pca-clf-locus", "value", allow_duplicate=True),
-            Output("pca-clf-status", "children", allow_duplicate=True),
-            Input("pca-clf-locus-browse", "n_clicks"),
-            State("pca-clf-locus", "value"),
-            State("project-store", "data"),
-            prevent_initial_call=True,
-        )
-        def _browse_locus(n_clicks, current, project_blob):
-            initial = (project_blob or {}).get("root") or current
-            chosen = pick_file_dialog(initial=initial, title="Select locus lookup CSV")
-            if not chosen:
-                return no_update, "Locus browse cancelled."
-            return chosen, f"Locus lookup: {chosen}"
-
-        @app.callback(
-            Output("pca-clf-celov-out", "value"),
-            Output("pca-clf-status", "children", allow_duplicate=True),
-            Input("pca-clf-celov-browse", "n_clicks"),
-            State("pca-clf-celov-out", "value"),
-            State("project-store", "data"),
-            prevent_initial_call=True,
-        )
-        def _browse_celov(n_clicks, current, project_blob):
-            initial = (project_blob or {}).get("root") or current
-            chosen = pick_save_file_dialog(
-                initial=initial,
-                title="Save Celov weighed genes (use {} for type)",
-                defaultextension=".txt",
-                initialfile="PCA_LinearClass_{}.txt",
-            )
-            if not chosen:
-                return no_update, "Celov path browse cancelled."
-            p = Path(chosen)
-            if "{}" not in p.name:
-                chosen = str(p.with_name(f"{p.stem}_{{}}{p.suffix or '.txt'}"))
-            return chosen, f"Celov output template: {chosen}"
-
-        @app.callback(
-            Output("pca-clf-status", "children", allow_duplicate=True),
-            Input("pca-clf-celov-save", "n_clicks"),
-            State("pca-clf-cache", "data"),
-            State("pca-clf-celov-out", "value"),
-            State("pca-clf-celov-mode", "value"),
-            State("pca-clf-locus", "value"),
-            State("pca-clf-gene-pcs", "value"),
-            State("project-store", "data"),
-            State("ds-active", "value"),
-            prevent_initial_call=True,
-        )
-        def _save_celov(
-            n_clicks, clf_cache, out_path, mode, locus_path, gene_pcs, project_blob, active
-        ):
-            if not clf_cache or not clf_cache.get("w_gene"):
-                return "Run the linear classifier first."
-            if not out_path or not str(out_path).strip():
-                return "Choose an output .txt path (Browse)."
-            if "loadings" not in _PCA_RUNTIME:
-                return "Run PCA first."
-            try:
-                from src.biocyc.celov_multiomics_post import load_locus_lookup
-
-                n_pcs = int(clf_cache.get("gene_pcs") or gene_pcs or 5)
-                weighed = build_weighed_genes(
-                    _PCA_RUNTIME["loadings"],
-                    _PCA_RUNTIME["explained_variance"],
-                    np.asarray(clf_cache["w_gene"], dtype=float),
-                    n_pcs,
-                )
-                lookup = None
-                if locus_path and str(locus_path).strip():
-                    lookup = load_locus_lookup(str(locus_path).strip())
-                name = active if isinstance(active, str) else (active[0] if active else None)
-                entry = next(
-                    (
-                        d
-                        for d in (project_blob or {}).get("datasets", [])
-                        if d.get("name") == name
-                    ),
-                    None,
-                )
-                paths = save_classifier_celov(
-                    weighed,
-                    str(out_path).strip(),
-                    mode=mode or "up_and_down",
-                    locus_lookup=lookup,
-                    id_column=resolve_celov_id_col(entry),
-                )
-                return "Saved Celov: " + ", ".join(str(p) for p in paths)
-            except Exception as exc:  # noqa: BLE001
-                return f"Celov save error: {exc}"
-
-        @app.callback(
             Output("pca-expr-by", "options"),
-            Output("pca-pc-expr-by", "options"),
-            Output("pca-clf-expr-by", "options"),
             Input("pca-cache", "data"),
             Input("pca-pc-locus", "value"),
-            Input("pca-clf-locus", "value"),
         )
-        def _pca_expr_by_options(cache, pc_locus, clf_locus):
-            lookup = _ensure_pca_lookup(pc_locus or clf_locus)
-            opts = _gene_select_by_options(lookup)
-            return opts, opts, opts
+        def _pca_expr_by_options(cache, locus_path):
+            return _gene_select_by_options(_ensure_pca_lookup(locus_path))
 
         @app.callback(
             Output("pca-expr-genes", "options"),
@@ -1739,59 +1603,6 @@ class PCAModule:
                 return ids, ids
             genes = [str(g) for g in (current or [])]
             return no_update, genes
-
-        @app.callback(
-            Output("pca-pc-expr-genes", "options"),
-            Input("pca-cache", "data"),
-            Input("pca-weight-pc", "value"),
-            Input("pca-pc-expr-by", "value"),
-            Input("pca-pc-expr-topn", "value"),
-            Input("pca-pc-expr-side", "value"),
-            Input("pca-pc-locus", "value"),
-        )
-        def _pca_pc_expr_gene_options(cache, pc, by_col, topn, side, locus_path):
-            if not cache or "loadings" not in _PCA_RUNTIME or not pc:
-                return []
-            try:
-                weighed = weighed_genes_from_pc(_PCA_RUNTIME["loadings"], str(pc))
-            except Exception:  # noqa: BLE001
-                return []
-            top = _top_weighed(weighed, topn, side)
-            weights = dict(zip(top["geneID"].astype(str), top["gene_weight"].astype(float)))
-            lookup = _ensure_pca_lookup(locus_path)
-            return _gene_dropdown_options(list(top["geneID"].astype(str)), lookup, by_col, weights)
-
-        @app.callback(
-            Output("pca-clf-expr-genes", "options"),
-            Input("pca-clf-cache", "data"),
-            Input("pca-cache", "data"),
-            Input("pca-clf-expr-by", "value"),
-            Input("pca-clf-expr-topn", "value"),
-            Input("pca-clf-expr-side", "value"),
-            Input("pca-clf-locus", "value"),
-            Input("pca-clf-gene-pcs", "value"),
-        )
-        def _pca_clf_expr_gene_options(
-            clf_cache, cache, by_col, topn, side, locus_path, gene_pcs
-        ):
-            if not cache or not clf_cache or not clf_cache.get("w_gene"):
-                return []
-            if "loadings" not in _PCA_RUNTIME:
-                return []
-            try:
-                n_pcs = int(clf_cache.get("gene_pcs") or gene_pcs or 5)
-                weighed = build_weighed_genes(
-                    _PCA_RUNTIME["loadings"],
-                    _PCA_RUNTIME["explained_variance"],
-                    np.asarray(clf_cache["w_gene"], dtype=float),
-                    n_pcs,
-                )
-            except Exception:  # noqa: BLE001
-                return []
-            top = _top_weighed(weighed, topn, side)
-            weights = dict(zip(top["geneID"].astype(str), top["gene_weight"].astype(float)))
-            lookup = _ensure_pca_lookup(locus_path)
-            return _gene_dropdown_options(list(top["geneID"].astype(str)), lookup, by_col, weights)
 
         @app.callback(
             Output("pca-expr-fig", "figure"),

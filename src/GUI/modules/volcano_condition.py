@@ -912,9 +912,6 @@ class VolcanoConditionModule:
             ]
         )
 
-    def layout(self):
-        return html.Div([self.level1(), self.level2()])
-
     def register_callbacks(self, app: Dash) -> None:
         @app.callback(
             Output("vc-cols-hint", "children"),
