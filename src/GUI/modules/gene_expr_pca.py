@@ -24,18 +24,13 @@ from ..components.controls import (
     parse_aes_choice,
     set_fig_size,
 )
+from ..components.gene_meta_mark import GENE_HOVER_COLUMNS
 from ..data_store import session_from_store
 from .clustering import _locus_path_from_session
 from .pca import _PCA_RUNTIME, _run_pca, _score_frame_for_plot
 
-# Hardcoded locus / ID fields (no free column picker).
-# From locus_lookup_biocyc_ids_handcurated.csv: geneName + strain synonym cols.
-_NAME_FIELDS = (
-    "geneID",
-    "geneName",
-    "Gene name A1552",
-    "Gene name C6706",
-)
+# Search / pick fields: geneID plus hardcoded locus name columns.
+_NAME_FIELDS = ("geneID", *GENE_HOVER_COLUMNS)
 
 _GRAPH_CONFIG = {
     "toImageButtonOptions": {"format": "svg", "filename": "gene_expression_profiles"},
@@ -149,6 +144,21 @@ def _expr_pca_figure(
         sizes = _marker_sizes(score_df[size_col])
     else:
         sizes = float(size_const) if size_const is not None else 8.0
+    var = list(map(float, var_ratio or []))
+
+    def _pc_axis_label(col: str) -> str:
+        if not str(col).startswith("PC"):
+            return str(col)
+        try:
+            i = int(str(col)[2:]) - 1
+        except ValueError:
+            return str(col)
+        if 0 <= i < len(var):
+            return f"{col} ({100 * var[i]:.1f}%)"
+        return str(col)
+
+    x_label = _pc_axis_label(x_col)
+    y_label = _pc_axis_label(y_col)
     for i, gene in enumerate(genes):
         row, col = i // n_cols + 1, i % n_cols + 1
         title = titles[i] if i < len(titles) else gene
@@ -183,14 +193,10 @@ def _expr_pca_figure(
             row=row,
             col=col,
         )
-        fig.update_xaxes(title_text=x_col if row == n_rows else "", row=row, col=col)
-        fig.update_yaxes(title_text=y_col if col == 1 else "", row=row, col=col)
-    var = list(map(float, var_ratio or []))
-    sub = ""
-    if len(var) >= 2:
-        sub = f"PC1 {100 * var[0]:.1f}%, PC2 {100 * var[1]:.1f}%"
-    fig.update_layout(title=_plotly_title("Gene expression on PCA", sub))
-    apply_export_layout(fig, title_lines=2, legend=False, height=max(420, 320 * n_rows))
+        fig.update_xaxes(title_text=x_label if row == n_rows else "", row=row, col=col)
+        fig.update_yaxes(title_text=y_label if col == 1 else "", row=row, col=col)
+    fig.update_layout(title=_plotly_title("Gene expression on PCA"))
+    apply_export_layout(fig, title_lines=1, legend=False, height=max(420, 320 * n_rows))
     return fig
 
 

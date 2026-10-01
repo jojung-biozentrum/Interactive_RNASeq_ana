@@ -25,9 +25,17 @@ from ..components.controls import (
     equal_xy_axes,
     fig_size_controls,
     set_fig_size,
-    _point_colors,
-    _point_symbols,
-    _marker_sizes,
+    _LEGEND_GREY,
+    _LEGEND_STD_SIZE,
+    _MISSING_COLOR,
+    _MISSING_LABEL,
+    _MISSING_SYMBOL,
+    _color_map,
+    _has_missing,
+    _is_missing,
+    _legend_dummy,
+    _shape_map,
+    _size_map,
 )
 from ..components.folder_browser import pick_save_file_dialog
 from ..components.sample_detail import (
@@ -307,6 +315,180 @@ def _scatter_trace(
     return go.Scatter(**common)
 
 
+def _closest_aes_maps(
+    score_df: pd.DataFrame,
+    closest_ids: set[str],
+    color_col: str | None,
+    shape_col: str | None,
+    size_col: str | None,
+) -> dict:
+    """Color/shape/size maps from all closest samples (shared across level panels)."""
+    keep = [i for i in score_df.index if str(i) in closest_ids]
+    sub = score_df.loc[keep] if keep else score_df.iloc[0:0]
+    out: dict = {
+        "color_col": None,
+        "shape_col": None,
+        "size_col": None,
+        "color_map": {},
+        "shape_map": {},
+        "size_map": {},
+        "color_missing": False,
+        "shape_missing": False,
+        "size_missing": False,
+    }
+    if color_col and color_col in sub.columns and len(sub):
+        out["color_col"] = color_col
+        out["color_map"] = _color_map(sub[color_col])
+        out["color_missing"] = _has_missing(sub[color_col])
+    if shape_col and shape_col in sub.columns and len(sub):
+        out["shape_col"] = shape_col
+        out["shape_map"] = _shape_map(sub[shape_col])
+        out["shape_missing"] = _has_missing(sub[shape_col])
+    if size_col and size_col in sub.columns and len(sub):
+        out["size_col"] = size_col
+        out["size_map"] = _size_map(sub[size_col], default=12.0)
+        out["size_missing"] = _has_missing(sub[size_col])
+    return out
+
+
+def _aes_point_style(
+    sub: pd.DataFrame,
+    aes: dict,
+    *,
+    is_3d: bool,
+) -> tuple[list, list, list]:
+    n = len(sub)
+    color_col = aes.get("color_col")
+    shape_col = aes.get("shape_col")
+    size_col = aes.get("size_col")
+    cmap = aes.get("color_map") or {}
+    smap = aes.get("shape_map") or {}
+    zmap = aes.get("size_map") or {}
+    if color_col and color_col in sub.columns:
+        colors = [
+            _MISSING_COLOR if _is_missing(v) else cmap.get(str(v), "#d62728")
+            for v in sub[color_col]
+        ]
+    else:
+        colors = ["crimson"] * n
+    if shape_col and shape_col in sub.columns:
+        symbols = [
+            _symbol_for(
+                _MISSING_SYMBOL if _is_missing(v) else smap.get(str(v), "circle"),
+                is_3d,
+            )
+            for v in sub[shape_col]
+        ]
+    else:
+        symbols = [_symbol_for("circle", is_3d)] * n
+    if size_col and size_col in sub.columns:
+        sizes = [
+            12.0 if _is_missing(v) else float(zmap.get(str(v), 12.0))
+            for v in sub[size_col]
+        ]
+    else:
+        sizes = [12.0] * n
+    return colors, symbols, sizes
+
+
+def _add_closest_aes_legend(fig: go.Figure, aes: dict, *, is_3d: bool) -> None:
+    """Seaborn-style color / shape / size legend groups (same maps on every panel)."""
+    color_col = aes.get("color_col")
+    shape_col = aes.get("shape_col")
+    size_col = aes.get("size_col")
+    if not color_col and not shape_col and not size_col:
+        _legend_dummy(
+            fig,
+            name="closest",
+            color="crimson",
+            symbol="circle",
+            size=_LEGEND_STD_SIZE,
+            group="legend-closest",
+            group_title="Closest",
+            first_in_group=True,
+        )
+        return
+    if color_col:
+        cmap = aes.get("color_map") or {}
+        first = True
+        if aes.get("color_missing"):
+            _legend_dummy(
+                fig,
+                name=_MISSING_LABEL,
+                color=_MISSING_COLOR,
+                symbol="circle",
+                size=_LEGEND_STD_SIZE,
+                group="legend-color",
+                group_title=color_col,
+                first_in_group=True,
+            )
+            first = False
+        for i, cat in enumerate(cmap):
+            _legend_dummy(
+                fig,
+                name=cat,
+                color=cmap[cat],
+                symbol="circle",
+                size=_LEGEND_STD_SIZE,
+                group="legend-color",
+                group_title=color_col,
+                first_in_group=first and i == 0,
+            )
+    if shape_col:
+        smap = aes.get("shape_map") or {}
+        first = True
+        if aes.get("shape_missing"):
+            _legend_dummy(
+                fig,
+                name=_MISSING_LABEL,
+                color=_LEGEND_GREY,
+                symbol=_MISSING_SYMBOL,
+                size=_LEGEND_STD_SIZE,
+                group="legend-shape",
+                group_title=shape_col,
+                first_in_group=True,
+            )
+            first = False
+        for i, cat in enumerate(smap):
+            _legend_dummy(
+                fig,
+                name=cat,
+                color=_LEGEND_GREY,
+                symbol=_symbol_for(smap[cat], is_3d),
+                size=_LEGEND_STD_SIZE,
+                group="legend-shape",
+                group_title=shape_col,
+                first_in_group=first and i == 0,
+            )
+    if size_col:
+        zmap = aes.get("size_map") or {}
+        first = True
+        if aes.get("size_missing"):
+            _legend_dummy(
+                fig,
+                name=_MISSING_LABEL,
+                color=_LEGEND_GREY,
+                symbol="circle",
+                size=_LEGEND_STD_SIZE,
+                group="legend-size",
+                group_title=size_col,
+                first_in_group=True,
+            )
+            first = False
+        cats = sorted(zmap.keys(), key=lambda c: (zmap[c], str(c)))
+        for i, cat in enumerate(cats):
+            _legend_dummy(
+                fig,
+                name=cat,
+                color=_LEGEND_GREY,
+                symbol="circle",
+                size=float(zmap[cat]),
+                group="legend-size",
+                group_title=size_col,
+                first_in_group=first and i == 0,
+            )
+
+
 def level_pca_fig(
     score_df: pd.DataFrame,
     *,
@@ -321,6 +503,7 @@ def level_pca_fig(
     color_col: str | None = None,
     shape_col: str | None = None,
     size_col: str | None = None,
+    aes_maps: dict | None = None,
     title: str | dict,
 ) -> go.Figure:
     ids = [str(i) for i in score_df.index]
@@ -337,6 +520,10 @@ def level_pca_fig(
             highlight.append(sid)
         else:
             rest.append(sid)
+    aes = aes_maps or _closest_aes_maps(
+        score_df, set(highlight), color_col, shape_col, size_col
+    )
+    has_aes = bool(aes.get("color_col") or aes.get("shape_col") or aes.get("size_col"))
     fig = go.Figure()
     tr = _scatter_trace(
         score_df,
@@ -351,6 +538,7 @@ def level_pca_fig(
         name="rest",
     )
     if tr is not None:
+        tr.showlegend = False
         fig.add_trace(tr)
     for i, cid in enumerate(sorted(c for c in bio_by_c if c >= 0)):
         shape = SHAPE_CONSTANTS[i % len(SHAPE_CONSTANTS)]
@@ -367,6 +555,10 @@ def level_pca_fig(
             name=f"{level} cluster {cid}",
         )
         if tr is not None:
+            tr.showlegend = not has_aes
+            tr.legendgroup = "bio"
+            if i == 0 and not has_aes:
+                tr.legendgrouptitle = {"text": level}
             fig.add_trace(tr)
     if -1 in bio_by_c:
         tr = _scatter_trace(
@@ -382,28 +574,14 @@ def level_pca_fig(
             name=f"{level}",
         )
         if tr is not None:
+            tr.showlegend = not has_aes
             fig.add_trace(tr)
     if highlight:
         sub = score_df.loc[[i for i in score_df.index.astype(str) if i in set(highlight)]]
-        # fall back index match
         if sub.empty:
             keep = [i for i in score_df.index if str(i) in set(highlight)]
             sub = score_df.loc[keep]
-        colors = (
-            _point_colors(sub[color_col])
-            if color_col and color_col in sub.columns
-            else ["crimson"] * len(sub)
-        )
-        symbols = (
-            _point_symbols(sub[shape_col])
-            if shape_col and shape_col in sub.columns
-            else ["circle"] * len(sub)
-        )
-        sizes = (
-            _marker_sizes(sub[size_col])
-            if size_col and size_col in sub.columns
-            else [12] * len(sub)
-        )
+        colors, symbols, sizes = _aes_point_style(sub, aes, is_3d=bool(z_col))
         idx = sub.index.astype(str)
         text = idx
         if "fileName" in sub.columns:
@@ -416,12 +594,15 @@ def level_pca_fig(
             text=text,
             customdata=idx,
             hovertemplate="%{text}<extra></extra>",
+            showlegend=False,
             marker=dict(color=colors, symbol=symbols, size=sizes, opacity=1.0),
         )
         if z_col and z_col in sub.columns:
             fig.add_trace(go.Scatter3d(z=sub[z_col], **common))
         else:
             fig.add_trace(go.Scatter(**common))
+    if not z_col:
+        _add_closest_aes_legend(fig, aes, is_3d=False)
     if isinstance(title, dict):
         fig.update_layout(title=title)
         title_lines = str(title.get("text", "")).count("<br>") + 1
@@ -430,11 +611,12 @@ def level_pca_fig(
         title_lines = 1
     if not z_col:
         fig = equal_xy_axes(fig, score_df, x_col, y_col)
+    leg_kw = None if has_aes else {"title_text": level}
     apply_export_layout(
         fig,
         title_lines=title_lines,
         legend=True,
-        legend_kwargs={"title_text": level},
+        legend_kwargs=leg_kw,
         uirevision=f"par-pca-{level}",
     )
     return fig
@@ -824,7 +1006,7 @@ class ParallelConditionsModule:
                 html.Div(id="par-summary"),
                 html.H6("PCA per level", className="mt-3"),
                 html.P(
-                    "Closest LC cluster samples α=1; other points α=0.2. Four panels per row.",
+                    "Closest LC cluster samples α=1; other points α=0.2. Two panels per row.",
                     className="text-muted small",
                 ),
                 dbc.Row(
@@ -862,31 +1044,25 @@ class ParallelConditionsModule:
                     ],
                     className="g-2 mb-2",
                 ),
-                dbc.Button("Plot PCA", id="par-pca-run", color="primary", className="mb-2"),
-                html.P(
-                    "After plotting, color / shape / size style closest samples "
-                    "(metadata columns, like PCA).",
-                    className="text-muted small mb-1",
-                ),
                 dbc.Row(
                     [
                         dbc.Col(
                             [
-                                html.Label("Color (closest)"),
+                                html.Label("Color"),
                                 dcc.Dropdown(id="par-pca-color-col", clearable=True),
                             ],
                             md=4,
                         ),
                         dbc.Col(
                             [
-                                html.Label("Shape (closest)"),
+                                html.Label("Shape"),
                                 dcc.Dropdown(id="par-pca-shape-col", clearable=True),
                             ],
                             md=4,
                         ),
                         dbc.Col(
                             [
-                                html.Label("Size (closest)"),
+                                html.Label("Size"),
                                 dcc.Dropdown(id="par-pca-size-col", clearable=True),
                             ],
                             md=4,
@@ -894,16 +1070,24 @@ class ParallelConditionsModule:
                     ],
                     className="g-2 mb-2",
                 ),
-                html.Div(id="par-pca-panels"),
-                html.Div(
+                dbc.Row(
                     [
-                        html.H6("Sample metadata", className="mb-2"),
-                        html.Div(
-                            id="par-pca-sample-detail",
-                            children=sample_detail_placeholder(),
+                        dbc.Col(html.Div(id="par-pca-panels"), md=8),
+                        dbc.Col(
+                            html.Div(
+                                [
+                                    html.H6("Sample metadata", className="mb-2"),
+                                    html.Div(
+                                        id="par-pca-sample-detail",
+                                        children=sample_detail_placeholder(),
+                                    ),
+                                ],
+                                className="border rounded p-2 bg-light mb-2",
+                            ),
+                            md=4,
                         ),
                     ],
-                    className="border rounded p-2 bg-light mb-2",
+                    className="g-2 mb-2",
                 ),
                 dcc.Store(id="par-cache"),
             ]
@@ -1135,7 +1319,9 @@ class ParallelConditionsModule:
                         ),
                         dbc.Col(
                             [
-                                html.Label("Replicate column (optional)"),
+                                html.Label(
+                                    "Replicate column for subset of interest (optional)"
+                                ),
                                 dcc.Dropdown(id="par-grad-rep-col", clearable=True),
                             ],
                             md=3,
@@ -1192,8 +1378,12 @@ class ParallelConditionsModule:
             cols = list((session_blob or {}).get("meta_columns", []))
             opts = [{"label": c, "value": c} for c in cols]
             prefer = current if current in cols else (
-                "Replicate" if "Replicate" in cols else (
-                    "replicate" if "replicate" in cols else None
+                "TechnicalReplicate"
+                if "TechnicalReplicate" in cols
+                else (
+                    "Replicate"
+                    if "Replicate" in cols
+                    else ("replicate" if "replicate" in cols else None)
                 )
             )
             return opts, prefer
@@ -1368,35 +1558,32 @@ class ParallelConditionsModule:
 
         @app.callback(
             Output("par-pca-panels", "children"),
-            Input("par-pca-run", "n_clicks"),
+            Input("par-cache", "data"),
             Input("par-pca-color-col", "value"),
             Input("par-pca-shape-col", "value"),
             Input("par-pca-size-col", "value"),
+            Input("par-pca-x", "value"),
+            Input("par-pca-y", "value"),
+            Input("par-pca-z", "value"),
             Input("par-pca-fig-w", "value"),
             Input("par-pca-fig-h", "value"),
-            State("par-cache", "data"),
             State("session-store", "data"),
-            State("par-pca-x", "value"),
-            State("par-pca-y", "value"),
-            State("par-pca-z", "value"),
-            prevent_initial_call=True,
         )
         def _plot_par_pca(
-            n_clicks,
+            cache,
             color_col,
             shape_col,
             size_col,
-            fig_w,
-            fig_h,
-            cache,
-            session_blob,
             x_col,
             y_col,
             z_col,
+            fig_w,
+            fig_h,
+            session_blob,
         ):
             if not cache or not _hydrate_par_from_cache(cache, session_blob):
                 return html.P(
-                    "Run per-level clustering, then Plot PCA.",
+                    "Run per-level clustering to plot PCA.",
                     className="text-muted small mb-0",
                 )
             score_df = _PAR_RUNTIME["score_df"]
@@ -1413,6 +1600,12 @@ class ParallelConditionsModule:
             hl_map = _PAR_RUNTIME.get("closest") or {}
             detail = _PAR_RUNTIME.get("level_detail") or {}
             levels = list(_PAR_RUNTIME.get("levels") or [])
+            all_closest: set[str] = set()
+            for level in levels:
+                all_closest |= set(hl_map.get(level) or [])
+            aes_maps = _closest_aes_maps(
+                score_df, all_closest, color_col, shape_col, size_col
+            )
             panels = []
             for level in levels:
                 info = detail.get(level) or {}
@@ -1439,6 +1632,7 @@ class ParallelConditionsModule:
                     color_col=color_col,
                     shape_col=shape_col,
                     size_col=size_col,
+                    aes_maps=aes_maps,
                     title=_plotly_title(
                         f"PCA · {level}",
                         f"closest n={len(hl_map.get(level) or [])}",
@@ -1461,8 +1655,8 @@ class ParallelConditionsModule:
             if not panels:
                 return html.P("No levels to plot.", className="text-muted small mb-0")
             rows = []
-            for i in range(0, len(panels), 4):
-                chunk = [dbc.Col(p, md=3) for p in panels[i : i + 4]]
+            for i in range(0, len(panels), 2):
+                chunk = [dbc.Col(p, md=6) for p in panels[i : i + 2]]
                 rows.append(dbc.Row(chunk, className="g-2 mb-2"))
             return rows
 
@@ -1614,12 +1808,11 @@ class ParallelConditionsModule:
             Input("par-grad-rho-s", "value"),
             Input("par-grad-dr-s", "value"),
             Input("par-grad-selected", "data"),
-            Input("ds-gene-meta-cols", "value"),
             State("session-store", "data"),
             State("project-store", "data"),
         )
         def _replot_par_grads(
-            cache, rho_p, dr_p, rho_s, dr_s, selected, gene_meta_cols, session_blob, project_blob
+            cache, rho_p, dr_p, rho_s, dr_s, selected, session_blob, project_blob
         ):
             empty = go.Figure()
             results = _PAR_RUNTIME.get("grad_results")
@@ -1638,7 +1831,7 @@ class ParallelConditionsModule:
                         lookup = load_locus_lookup(locus)
                     except Exception:  # noqa: BLE001
                         lookup = None
-            hover_map = gene_meta_hover_map(lookup, list(gene_meta_cols or []))
+            hover_map = gene_meta_hover_map(lookup)
             pearson = gradient_scatter_fig(
                 results,
                 "pearson",

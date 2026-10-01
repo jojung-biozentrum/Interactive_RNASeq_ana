@@ -281,7 +281,7 @@ def parse_aes_choice(value: str | None, columns: list[str] | None = None) -> tup
     if value is None or value == "":
         return None, None
     value = str(value)
-    cols = set(columns or [])
+    cols = set(columns) if columns is not None else set()
 
     if value.startswith(COL):
         return value[len(COL) :], None

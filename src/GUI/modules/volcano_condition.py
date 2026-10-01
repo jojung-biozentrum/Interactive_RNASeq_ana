@@ -1016,7 +1016,6 @@ class VolcanoConditionModule:
             State("vc-center", "value"),
             State("vc-padj", "value"),
             State("vc-fc", "value"),
-            State("ds-gene-meta-cols", "value"),
             prevent_initial_call=True,
         )
         def _run(
@@ -1030,7 +1029,6 @@ class VolcanoConditionModule:
             center,
             padj_thr,
             fc_thr,
-            gene_meta_cols,
         ):
             hide = {"display": "none"}
 
@@ -1093,7 +1091,7 @@ class VolcanoConditionModule:
                 title=_plotly_title(title, f"Bin A n={len(keep_a)} vs Bin B n={len(keep_b)}"),
                 neg_log10_padj_threshold=float(padj_thr or 2.0),
                 fold_change_threshold=float(fc_thr or 0.5),
-                hover_map=gene_meta_hover_map(lookup, list(gene_meta_cols or [])),
+                hover_map=gene_meta_hover_map(lookup),
             )
             fig = set_fig_size(fig, fig_w, fig_h)
             mark_cols = locus_mark_columns(lookup)
@@ -1116,10 +1114,9 @@ class VolcanoConditionModule:
             Input("vc-mark-entry", "value"),
             Input("vc-fig-w", "value"),
             Input("vc-fig-h", "value"),
-            Input("ds-gene-meta-cols", "value"),
             prevent_initial_call=True,
         )
-        def _replot_marks(mark_col, mark_entry, fig_w, fig_h, gene_meta_cols):
+        def _replot_marks(mark_col, mark_entry, fig_w, fig_h):
             results = _VC_RUNTIME.get("results")
             meta = _VC_RUNTIME.get("plot_meta")
             if results is None or not meta:
@@ -1134,7 +1131,7 @@ class VolcanoConditionModule:
                 fold_change_threshold=meta["fc"],
                 mark_genes=mark_genes,
                 mark_label=mark_label,
-                hover_map=gene_meta_hover_map(lookup, list(gene_meta_cols or [])),
+                hover_map=gene_meta_hover_map(lookup),
             )
             return set_fig_size(fig, fig_w, fig_h), mark_legend_banner(n_mark, mark_entry)
 

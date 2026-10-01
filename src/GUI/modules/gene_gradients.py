@@ -1232,7 +1232,6 @@ class GeneGradientsModule:
             Input("grad-mark-col", "value"),
             Input("grad-mark-entry", "value"),
             Input("grad-selected-genes", "data"),
-            Input("ds-gene-meta-cols", "value"),
         )
         def _replot(
             cache,
@@ -1245,7 +1244,6 @@ class GeneGradientsModule:
             mark_col,
             mark_entry,
             selected_genes,
-            gene_meta_cols,
         ):
             empty = go.Figure()
             results = _GRAD_RUNTIME.get("results")
@@ -1285,10 +1283,7 @@ class GeneGradientsModule:
                 mark_label = "selected"
             else:
                 mark_label = None
-            hover_map = gene_meta_hover_map(
-                _GRAD_RUNTIME.get("locus_lookup"),
-                list(gene_meta_cols or []),
-            )
+            hover_map = gene_meta_hover_map(_GRAD_RUNTIME.get("locus_lookup"))
 
             measure_figs = []
             for method in methods:

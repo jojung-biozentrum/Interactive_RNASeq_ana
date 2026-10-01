@@ -13,6 +13,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from sklearn.decomposition import PCA
 
+from src.biocyc.celov_multiomics_post import annotate_gene_table, load_locus_lookup
 from src.GUI.components.gene_scores import (
     weighed_genes_from_classifier,
     weighed_genes_from_pc,
@@ -36,6 +37,7 @@ from ..components.controls import (
 from ..components.sample_detail import plot_with_sample_detail, register_sample_detail_callback
 from ..components.folder_browser import pick_file_dialog, pick_save_file_dialog
 from ..data_store import SessionData, session_from_store
+from .clustering import _locus_path_from_session
 from .pca_classifier import (
     add_decision_boundary,
     build_weighed_genes,
@@ -94,26 +96,66 @@ def _top_weighed(weighed: pd.DataFrame, n) -> pd.DataFrame:
     try:
         n = max(1, int(n))
     except (TypeError, ValueError):
-        n = 30
+        n = 10
     return weighed.head(n)
 
 
-def _gene_weight_table(weighed: pd.DataFrame) -> html.Div:
+def _load_locus_for_tables(session_blob, project_blob) -> pd.DataFrame | None:
+    path = _locus_path_from_session(session_blob, project_blob)
+    if not path:
+        return None
+    try:
+        return load_locus_lookup(path)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _gene_weight_table(
+    weighed: pd.DataFrame,
+    locus_lookup: pd.DataFrame | None = None,
+) -> html.Div:
     if weighed is None or weighed.empty:
         return html.P("No genes to show.", className="text-muted small mb-0")
     show = weighed[["geneID", "gene_weight"]].copy()
-    header = [html.Th(c) for c in show.columns]
+    show["geneID"] = show["geneID"].astype(str)
+    if locus_lookup is not None and not locus_lookup.empty:
+        show = annotate_gene_table(show, locus_lookup)
+    # Prefer geneID, gene_weight, geneName, then remaining metadata columns.
+    front = [c for c in ("geneID", "gene_weight", "geneName") if c in show.columns]
+    rest = [c for c in show.columns if c not in front and c != "abs_gene_weight"]
+    show = show[front + rest]
+    ids = [str(g) for g in show["geneID"].tolist()]
+    id_list = html.Div(
+        [
+            html.Label("geneIDs", className="small text-muted mb-1"),
+            dcc.Textarea(
+                value=" ".join(ids),
+                readOnly=True,
+                style={
+                    "width": "100%",
+                    "height": "64px",
+                    "fontFamily": "monospace",
+                    "fontSize": "12px",
+                },
+                className="mb-2",
+            ),
+        ]
+    )
+    header = [html.Th(str(c), className="text-nowrap") for c in show.columns]
     body = []
     for _, row in show.iterrows():
-        body.append(
-            html.Tr(
-                [
-                    html.Td(str(row["geneID"]), className="text-nowrap"),
-                    html.Td(f"{float(row['gene_weight']):.4g}"),
-                ]
-            )
-        )
-    return html.Div(
+        cells = []
+        for c in show.columns:
+            val = row[c]
+            if c == "gene_weight":
+                text = f"{float(val):.4g}"
+            elif val is None or (isinstance(val, float) and pd.isna(val)):
+                text = ""
+            else:
+                text = str(val)
+            cells.append(html.Td(text, className="text-nowrap"))
+        body.append(html.Tr(cells))
+    table = html.Div(
         dbc.Table(
             [html.Thead(html.Tr(header)), html.Tbody(body)],
             bordered=True,
@@ -122,8 +164,9 @@ def _gene_weight_table(weighed: pd.DataFrame) -> html.Div:
             className="mb-0",
         ),
         className="overflow-auto",
-        style={"maxHeight": "320px"},
+        style={"maxHeight": "360px"},
     )
+    return html.Div([id_list, table])
 
 
 def _active_dataset_name(session_blob=None, active=None) -> str:
@@ -530,7 +573,7 @@ class PCAModule:
                                 dbc.Input(
                                     id="pca-weight-topn",
                                     type="number",
-                                    value=30,
+                                    value=10,
                                     min=5,
                                     step=1,
                                 ),
@@ -763,7 +806,7 @@ class PCAModule:
                     [
                         dbc.Col(
                             [
-                                html.Label("Genes: n PCs"),
+                                html.Label("nPCs for linear classifier"),
                                 dbc.Input(
                                     id="pca-clf-gene-pcs",
                                     type="number",
@@ -781,7 +824,7 @@ class PCAModule:
                                 dbc.Input(
                                     id="pca-clf-topn",
                                     type="number",
-                                    value=30,
+                                    value=10,
                                     min=5,
                                     step=1,
                                 ),
@@ -1206,8 +1249,10 @@ class PCAModule:
             Input("pca-cache", "data"),
             Input("pca-weight-pc", "value"),
             Input("pca-weight-topn", "value"),
+            Input("session-store", "data"),
+            Input("project-store", "data"),
         )
-        def _pc_gene_table(cache, pc, topn):
+        def _pc_gene_table(cache, pc, topn, session_blob, project_blob):
             _score_df, loadings, _var = _pca_fit_frames(cache)
             if loadings is None or loadings.empty or not pc:
                 return html.P(
@@ -1216,7 +1261,8 @@ class PCAModule:
                 )
             try:
                 weighed = weighed_genes_from_pc(loadings, str(pc))
-                return _gene_weight_table(_top_weighed(weighed, topn))
+                lookup = _load_locus_for_tables(session_blob, project_blob)
+                return _gene_weight_table(_top_weighed(weighed, topn), lookup)
             except Exception as exc:  # noqa: BLE001
                 return html.P(f"Could not list genes: {exc}", className="text-danger small mb-0")
 
@@ -1226,8 +1272,10 @@ class PCAModule:
             Input("pca-cache", "data"),
             Input("pca-clf-topn", "value"),
             Input("pca-clf-gene-pcs", "value"),
+            Input("session-store", "data"),
+            Input("project-store", "data"),
         )
-        def _clf_gene_table(clf_cache, pca_cache, topn, gene_pcs):
+        def _clf_gene_table(clf_cache, pca_cache, topn, gene_pcs, session_blob, project_blob):
             if not clf_cache:
                 return html.P(
                     "Run the linear classifier first.",
@@ -1268,7 +1316,8 @@ class PCAModule:
                     res["w"],
                     n_gene,
                 )
-                return _gene_weight_table(_top_weighed(weighed, topn))
+                lookup = _load_locus_for_tables(session_blob, project_blob)
+                return _gene_weight_table(_top_weighed(weighed, topn), lookup)
             except Exception as exc:  # noqa: BLE001
                 return html.P(f"Could not list genes: {exc}", className="text-danger small mb-0")
 

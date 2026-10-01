@@ -160,18 +160,6 @@ def dataset_picker_layout(
                 placeholder="Select a dataset to load",
                 clearable=True,
             ),
-            html.Label("Gene name columns", className="mt-2"),
-            dcc.Dropdown(
-                id="ds-gene-meta-cols",
-                multi=True,
-                placeholder="Select locus-lookup columns to show on gene hover",
-                clearable=True,
-            ),
-            html.P(
-                "Columns from the active dataset’s gene metadata (locus lookup). "
-                "Selected fields appear when hovering gene points.",
-                className="text-muted small mb-2",
-            ),
         ]
     )
 

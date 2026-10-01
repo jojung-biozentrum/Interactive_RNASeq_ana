@@ -83,15 +83,9 @@ def _brace_clusters(cids: list[int]) -> str:
     return "{" + ", ".join(cluster_label(c) for c in cids) + "}"
 
 
-def _heatmap_title(kind: str, dataset: str, t: int) -> dict:
-    if kind == "ss":
-        line1 = "Pairwise expression differences within samples"
-    elif kind == "gg":
-        line1 = "Pairwise expression differences within genes"
-    else:
-        line1 = "Pairwise expression differences between samples and genes"
+def _heatmap_title(dataset: str, t: int) -> dict:
     return _plotly_title(
-        line1,
+        "Pairwise expression differences within samples",
         f"in {dataset} normalization ({t} clusters)",
     )
 
@@ -297,12 +291,11 @@ def first_homogeneous_maxclust(
     return None, None
 
 
-def _run_hc(session: SessionData, *, method: str = "ward") -> dict:
-    """Cluster samples and genes on the unscaled count matrix (notebook).
+_HC_CACHE_N_PCS = 20
 
-    Linkage + PCA + distance matrices are computed once and stored; tab / cut
-    changes only rebuild Plotly figures from this cache.
-    """
+
+def _run_hc(session: SessionData, *, method: str = "ward") -> dict:
+    """Cluster samples on the unscaled count matrix (notebook samples × samples)."""
     if session.expression is None or session.metadata is None:
         raise RuntimeError("No session data")
     expr = session.expression
@@ -312,24 +305,20 @@ def _run_hc(session: SessionData, *, method: str = "ward") -> dict:
     meta = session.metadata
 
     Z_samples = _linkage(X, method=method)
-    Z_genes = _linkage(X.T, method=method)
     dist_samples = squareform(pdist(X, metric="euclidean"))
-    dist_genes = squareform(pdist(X.T, metric="euclidean"))
 
     pca = PCA()
     pca.fit(X)
     scores = pca.transform(X)
-    n_pcs = min(scores.shape[1], 50)
+    n_pcs = min(scores.shape[1], _HC_CACHE_N_PCS)
     pc_cols = [f"PC{i + 1}" for i in range(n_pcs)]
     score_df = pd.DataFrame(scores[:, :n_pcs], index=sample_ids, columns=pc_cols)
     score_df = score_df.join(meta)
 
     return {
         "Z_samples": Z_samples,
-        "Z_genes": Z_genes,
         "X": X,
         "dist_samples": dist_samples,
-        "dist_genes": dist_genes,
         "sample_ids": sample_ids,
         "gene_ids": gene_ids,
         "score_df": score_df,
@@ -337,6 +326,109 @@ def _run_hc(session: SessionData, *, method: str = "ward") -> dict:
         "n_samples": len(sample_ids),
         "n_genes": len(gene_ids),
     }
+
+
+def _pack_hc_cache(rt: dict) -> dict:
+    score_df = rt["score_df"]
+    n_pcs = sum(
+        1 for c in score_df.columns if str(c).startswith("PC") and str(c)[2:].isdigit()
+    )
+    return {
+        "ready": True,
+        "n_samples": rt["n_samples"],
+        "n_genes": rt["n_genes"],
+        "n_pcs": n_pcs,
+        "method": rt["method"],
+        "sample_ids": list(rt["sample_ids"]),
+        "Z_samples": np.asarray(rt["Z_samples"], dtype=float).tolist(),
+        "dist_samples": np.asarray(rt["dist_samples"], dtype=float).tolist(),
+        "scores": score_df.reset_index(names="_sample_id").to_dict(orient="list"),
+    }
+
+
+def _hc_cache_sig(cache: dict | None) -> tuple | None:
+    if not cache or not cache.get("ready") or "Z_samples" not in cache:
+        return None
+    ids = cache.get("sample_ids") or []
+    return (
+        cache.get("method"),
+        cache.get("n_samples"),
+        cache.get("n_genes"),
+        cache.get("n_pcs"),
+        ids[0] if ids else None,
+        ids[-1] if ids else None,
+        len(ids),
+    )
+
+
+def _hydrate_hc(cache: dict | None, session_blob=None, project_blob=None) -> bool:
+    """Fill ``_HC_RUNTIME`` from ``hc-cache`` (+ session) for multi-worker use."""
+    sig = _hc_cache_sig(cache)
+    if (
+        sig is not None
+        and _HC_RUNTIME.get("_cache_sig") == sig
+        and isinstance(_HC_RUNTIME.get("score_df"), pd.DataFrame)
+        and "Z_samples" in _HC_RUNTIME
+    ):
+        if _HC_RUNTIME.get("X") is None and session_blob:
+            session = session_from_store(session_blob)
+            if session.ready and session.expression is not None:
+                _HC_RUNTIME["X"] = session.numeric_matrix()
+                _HC_RUNTIME["gene_ids"] = list(session.expression.columns.astype(str))
+                _HC_RUNTIME["n_genes"] = len(_HC_RUNTIME["gene_ids"])
+        if _HC_RUNTIME.get("locus_lookup") is None and session_blob is not None:
+            path = _locus_path_from_session(session_blob, project_blob)
+            if path:
+                try:
+                    _HC_RUNTIME["locus_lookup"] = load_locus_lookup(path)
+                except Exception:  # noqa: BLE001
+                    pass
+        return True
+    if sig is None:
+        return False
+    score_df = pd.DataFrame(cache["scores"])
+    if "_sample_id" in score_df.columns:
+        score_df = score_df.set_index("_sample_id")
+    score_df.index = score_df.index.astype(str)
+    sample_ids = list(cache.get("sample_ids") or score_df.index.astype(str))
+    X = None
+    gene_ids: list[str] = []
+    if session_blob:
+        session = session_from_store(session_blob)
+        if session.ready and session.expression is not None:
+            X = session.numeric_matrix()
+            gene_ids = list(session.expression.columns.astype(str))
+    lookup = None
+    if session_blob is not None:
+        path = _locus_path_from_session(session_blob, project_blob)
+        if path:
+            try:
+                lookup = load_locus_lookup(path)
+            except Exception:  # noqa: BLE001
+                lookup = None
+    keep_volcano = {
+        k: _HC_RUNTIME[k]
+        for k in ("volcano_results", "volcano_plot_meta")
+        if k in _HC_RUNTIME and _HC_RUNTIME.get("_cache_sig") == sig
+    }
+    _HC_RUNTIME.clear()
+    _HC_RUNTIME.update(
+        {
+            "_cache_sig": sig,
+            "Z_samples": np.asarray(cache["Z_samples"], dtype=float),
+            "dist_samples": np.asarray(cache["dist_samples"], dtype=float),
+            "sample_ids": sample_ids,
+            "gene_ids": gene_ids,
+            "score_df": score_df,
+            "X": X,
+            "method": cache.get("method") or "ward",
+            "n_samples": int(cache.get("n_samples") or len(sample_ids)),
+            "n_genes": int(cache.get("n_genes") or len(gene_ids)),
+            "locus_lookup": lookup,
+            **keep_volcano,
+        }
+    )
+    return True
 
 
 def _sample_distance_fig(rt: dict, sample_labels: np.ndarray, *, dataset: str, t: int) -> go.Figure:
@@ -350,42 +442,10 @@ def _sample_distance_fig(rt: dict, sample_labels: np.ndarray, *, dataset: str, t
         ids,
         Z,
         Z,
-        title=_heatmap_title("ss", dataset, t),
+        title=_heatmap_title(dataset, t),
         row_leaf_clusters=leaf_c,
         col_leaf_clusters=leaf_c,
         xaxis_title="Samples",
-        yaxis_title="Samples",
-    )
-
-
-def _gene_distance_fig(rt: dict, *, dataset: str, t: int) -> go.Figure:
-    ids = rt["gene_ids"]
-    Z = rt["Z_genes"]
-    return heatmap_with_dendro(
-        rt["dist_genes"],
-        ids,
-        ids,
-        Z,
-        Z,
-        title=_heatmap_title("gg", dataset, t),
-        xaxis_title="Genes",
-        yaxis_title="Genes",
-    )
-
-
-def _sample_gene_fig(rt: dict, sample_labels: np.ndarray, *, dataset: str, t: int) -> go.Figure:
-    Z = rt["Z_samples"]
-    _, leaf_c = _leaf_clusters_in_dendro_order(Z, sample_labels)
-    return heatmap_with_dendro(
-        rt["X"],
-        rt["sample_ids"],
-        rt["gene_ids"],
-        Z,
-        rt["Z_genes"],
-        title=_heatmap_title("sg", dataset, t),
-        colorbar_title="Expression",
-        row_leaf_clusters=leaf_c,
-        xaxis_title="Genes",
         yaxis_title="Samples",
     )
 
@@ -495,16 +555,7 @@ class ClusteringModule:
                     ],
                 ),
                 html.Hr(),
-                html.H6("Heatmap"),
-                dcc.Tabs(
-                    id="hc-heatmap-tabs",
-                    value="ss",
-                    children=[
-                        dcc.Tab(label="Samples × samples", value="ss"),
-                        dcc.Tab(label="Genes × genes", value="gg"),
-                        dcc.Tab(label="Samples × genes", value="sg"),
-                    ],
-                ),
+                html.H6("Heatmap (samples × samples)"),
                 fig_size_controls(
                     "hc-heat",
                     default_width=760,
@@ -524,7 +575,7 @@ class ClusteringModule:
                                 [
                                     html.H6("Click detail", className="mb-2"),
                                     html.P(
-                                        "Samples: sample metadata. Genes: locus-lookup columns.",
+                                        "Click a cell for the two samples’ metadata.",
                                         className="text-muted small mb-2",
                                     ),
                                     html.Div(
@@ -578,10 +629,9 @@ class ClusteringModule:
                 ),
                 html.Div(id="hc-status", className="text-muted small mb-2"),
                 html.Div(
-                    id="hc-pca-section",
-                    children=[
+                    [
                         html.Hr(),
-                        html.H6("PCA + dendrogram (samples × samples)"),
+                        html.H6("PCA + dendrogram"),
                         dbc.Row(
                             [
                                 dbc.Col(
@@ -953,7 +1003,9 @@ class ClusteringModule:
         )
         def _fill_meta_cols(session_blob, cache):
             cols = list((session_blob or {}).get("meta_columns", []))
-            if _HC_RUNTIME.get("score_df") is not None:
+            if _hydrate_hc(cache, session_blob) and isinstance(
+                _HC_RUNTIME.get("score_df"), pd.DataFrame
+            ):
                 df = _HC_RUNTIME["score_df"]
                 pc = {c for c in df.columns if c.startswith("PC") and c[2:].isdigit()}
                 cols = [c for c in df.columns if c not in pc]
@@ -1019,16 +1071,12 @@ class ClusteringModule:
                         locus_note = f" (locus lookup: {len(rt['locus_lookup'])} genes)"
                 else:
                     locus_note = " (no locus lookup on dataset)"
+                cache = _pack_hc_cache(rt)
                 _HC_RUNTIME.clear()
                 _HC_RUNTIME.update(rt)
+                _HC_RUNTIME["_cache_sig"] = _hc_cache_sig(cache)
                 pcs = [c for c in rt["score_df"].columns if c.startswith("PC") and c[2:].isdigit()]
                 opts = [{"label": c, "value": c} for c in pcs]
-                cache = {
-                    "ready": True,
-                    "n_samples": rt["n_samples"],
-                    "n_genes": rt["n_genes"],
-                    "method": rt["method"],
-                }
                 return (
                     cache,
                     f"Clustering done ({rt['method']}): {rt['n_samples']} samples × "
@@ -1063,10 +1111,13 @@ class ClusteringModule:
             Output("hc-homo-status", "children", allow_duplicate=True),
             Input("hc-maxclust-apply", "n_clicks"),
             State("hc-maxclust", "value"),
+            State("hc-cache", "data"),
+            State("session-store", "data"),
+            State("project-store", "data"),
             prevent_initial_call=True,
         )
-        def _apply_maxclust(n_clicks, t):
-            if "Z_samples" not in _HC_RUNTIME:
+        def _apply_maxclust(n_clicks, t, cache, session_blob, project_blob):
+            if not _hydrate_hc(cache, session_blob, project_blob):
                 return no_update, "Run clustering first."
             n = _HC_RUNTIME["n_samples"]
             t_use = max(2, min(int(t or 2), n))
@@ -1079,10 +1130,13 @@ class ClusteringModule:
             Input("hc-homo-find", "n_clicks"),
             State("hc-homo-col", "value"),
             State("hc-homo-val", "value"),
+            State("hc-cache", "data"),
+            State("session-store", "data"),
+            State("project-store", "data"),
             prevent_initial_call=True,
         )
-        def _find_homo(n_clicks, col, val):
-            if "Z_samples" not in _HC_RUNTIME:
+        def _find_homo(n_clicks, col, val, cache, session_blob, project_blob):
+            if not _hydrate_hc(cache, session_blob, project_blob):
                 return no_update, no_update, "Run clustering first."
             if not col or val is None or val == "":
                 return no_update, no_update, "Choose metadata column and value."
@@ -1101,26 +1155,17 @@ class ClusteringModule:
             )
 
         @app.callback(
-            Output("hc-pca-section", "style"),
-            Input("hc-heatmap-tabs", "value"),
-        )
-        def _toggle_pca(tab):
-            if tab == "ss":
-                return {"display": "block"}
-            return {"display": "none"}
-
-        @app.callback(
             Output("hc-heatmap", "figure"),
             Input("hc-cache", "data"),
-            Input("hc-heatmap-tabs", "value"),
             Input("hc-maxclust-applied", "data"),
             Input("hc-heat-fig-w", "value"),
             Input("hc-heat-fig-h", "value"),
             Input("session-store", "data"),
+            State("project-store", "data"),
         )
-        def _plot_heatmap(cache, tab, t, fig_w, fig_h, session_blob):
+        def _plot_heatmap(cache, t, fig_w, fig_h, session_blob, project_blob):
             empty = go.Figure()
-            if not cache or "Z_samples" not in _HC_RUNTIME:
+            if not _hydrate_hc(cache, session_blob, project_blob):
                 return empty
             rt = _HC_RUNTIME
             dataset = _active_dataset_name(session_blob)
@@ -1128,12 +1173,7 @@ class ClusteringModule:
                 n = rt["n_samples"]
                 t = max(2, min(int(t or 2), n))
                 labels = _cut_clusters(rt["Z_samples"], t)
-                if tab == "gg":
-                    fig = _gene_distance_fig(rt, dataset=dataset, t=t)
-                elif tab == "sg":
-                    fig = _sample_gene_fig(rt, labels, dataset=dataset, t=t)
-                else:
-                    fig = _sample_distance_fig(rt, labels, dataset=dataset, t=t)
+                fig = _sample_distance_fig(rt, labels, dataset=dataset, t=t)
                 return set_fig_size(
                     fig, fig_w, fig_h, default_width=760, default_height=640
                 )
@@ -1145,22 +1185,20 @@ class ClusteringModule:
         @app.callback(
             Output("hc-heat-detail", "children"),
             Input("hc-heatmap", "clickData"),
-            Input("hc-heatmap-tabs", "value"),
             Input("hc-cache", "data"),
             Input("hc-maxclust-applied", "data"),
+            State("session-store", "data"),
+            State("project-store", "data"),
         )
-        def _heat_detail(click, tab, cache, t):
+        def _heat_detail(click, cache, t, session_blob, project_blob):
             triggered = callback_context.triggered_id
-            if triggered in ("hc-cache", "hc-heatmap-tabs") or not cache:
+            if triggered == "hc-cache" or not _hydrate_hc(cache, session_blob, project_blob):
                 return sample_detail_placeholder()
-            labels = None
-            t_use = None
-            if "Z_samples" in _HC_RUNTIME:
-                n = _HC_RUNTIME["n_samples"]
-                t_use = max(2, min(int(t or 2), n))
-                labels = _cut_clusters(_HC_RUNTIME["Z_samples"], t_use)
+            n = _HC_RUNTIME["n_samples"]
+            t_use = max(2, min(int(t or 2), n))
+            labels = _cut_clusters(_HC_RUNTIME["Z_samples"], t_use)
             return detail_from_heatmap_click(
-                click, _HC_RUNTIME, tab or "ss", labels=labels, t=t_use
+                click, _HC_RUNTIME, "ss", labels=labels, t=t_use
             )
 
         @app.callback(
@@ -1233,13 +1271,13 @@ class ClusteringModule:
             Input("hc-pca-z", "value"),
             Input("hc-pca-alpha-a", "value"),
             Input("hc-pca-alpha-b", "value"),
-            Input("hc-heatmap-tabs", "value"),
             Input("hc-cluster-sel", "data"),
             Input("hc-pca-fig-w", "value"),
             Input("hc-pca-fig-h", "value"),
             Input("hc-dendro-fig-w", "value"),
             Input("hc-dendro-fig-h", "value"),
             Input("session-store", "data"),
+            State("project-store", "data"),
         )
         def _plot_pca(
             cache,
@@ -1249,16 +1287,16 @@ class ClusteringModule:
             z_col,
             alpha_a,
             alpha_b,
-            tab,
             selected,
             pca_w,
             pca_h,
             dendro_w,
             dendro_h,
             session_blob,
+            project_blob,
         ):
             empty = go.Figure()
-            if tab != "ss" or not cache or "Z_samples" not in _HC_RUNTIME:
+            if not _hydrate_hc(cache, session_blob, project_blob):
                 return empty, empty
             rt = _HC_RUNTIME
             n = rt["n_samples"]
@@ -1317,10 +1355,14 @@ class ClusteringModule:
             Input("hc-cluster-sel", "data"),
             Input("hc-cache", "data"),
             Input("hc-maxclust-applied", "data"),
+            State("session-store", "data"),
+            State("project-store", "data"),
         )
-        def _pca_detail(click, meta_src, selected, cache, t):
+        def _pca_detail(click, meta_src, selected, cache, t, session_blob, project_blob):
             triggered = callback_context.triggered_id
-            if triggered == "hc-cache" or not cache or "score_df" not in _HC_RUNTIME:
+            if triggered == "hc-cache" or not _hydrate_hc(
+                cache, session_blob, project_blob
+            ):
                 return sample_detail_placeholder()
             df = _HC_RUNTIME["score_df"]
             n = _HC_RUNTIME["n_samples"]
@@ -1391,8 +1433,9 @@ class ClusteringModule:
             State("hc-volcano-center", "value"),
             State("hc-volcano-fig-w", "value"),
             State("hc-volcano-fig-h", "value"),
+            State("hc-cache", "data"),
             State("session-store", "data"),
-            State("ds-gene-meta-cols", "value"),
+            State("project-store", "data"),
             prevent_initial_call=True,
         )
         def _run_volcano(
@@ -1404,16 +1447,19 @@ class ClusteringModule:
             center,
             fig_w,
             fig_h,
+            cache,
             session_blob,
-            gene_meta_cols,
+            project_blob,
         ):
             empty = go.Figure()
             hide = {"display": "none"}
             show = {"display": "block"}
             clear_legend = mark_legend_banner(0, None)
             no_mark = (hide, [], None, clear_legend)
-            if "Z_samples" not in _HC_RUNTIME:
+            if not _hydrate_hc(cache, session_blob, project_blob):
                 return empty, "Run clustering first.", None, *no_mark
+            if _HC_RUNTIME.get("X") is None:
+                return empty, "Session expression missing for volcano.", None, *no_mark
             bins = _normalize_bin_sel(selected)
             if not bins["a"] or not bins["b"]:
                 return (
@@ -1487,9 +1533,7 @@ class ClusteringModule:
                 neg_log10_padj_threshold=padj_thr,
                 fold_change_threshold=fc_thr,
                 xaxis_title=x_label,
-                hover_map=gene_meta_hover_map(
-                    rt.get("locus_lookup"), list(gene_meta_cols or [])
-                ),
+                hover_map=gene_meta_hover_map(rt.get("locus_lookup")),
             )
             fig = set_fig_size(
                 fig, fig_w, fig_h, default_width=640, default_height=520
@@ -1516,10 +1560,9 @@ class ClusteringModule:
             Input("hc-volcano-mark-entry", "value"),
             Input("hc-volcano-fig-w", "value"),
             Input("hc-volcano-fig-h", "value"),
-            Input("ds-gene-meta-cols", "value"),
             prevent_initial_call=True,
         )
-        def _replot_volcano_marks(mark_col, mark_entry, fig_w, fig_h, gene_meta_cols):
+        def _replot_volcano_marks(mark_col, mark_entry, fig_w, fig_h):
             results = _HC_RUNTIME.get("volcano_results")
             meta = _HC_RUNTIME.get("volcano_plot_meta")
             if results is None or not meta:
@@ -1536,9 +1579,7 @@ class ClusteringModule:
                 xaxis_title=meta["xaxis_title"],
                 mark_genes=mark_genes,
                 mark_label=mark_label,
-                hover_map=gene_meta_hover_map(
-                    _HC_RUNTIME.get("locus_lookup"), list(gene_meta_cols or [])
-                ),
+                hover_map=gene_meta_hover_map(_HC_RUNTIME.get("locus_lookup")),
             )
             return (
                 set_fig_size(fig, fig_w, fig_h, default_width=640, default_height=520),
@@ -1673,10 +1714,13 @@ class ClusteringModule:
             Input("hc-export", "n_clicks"),
             State("hc-export-path", "value"),
             State("hc-maxclust-applied", "data"),
+            State("hc-cache", "data"),
+            State("session-store", "data"),
+            State("project-store", "data"),
             prevent_initial_call=True,
         )
-        def _export(n_clicks, path, t):
-            if "Z_samples" not in _HC_RUNTIME:
+        def _export(n_clicks, path, t, cache, session_blob, project_blob):
+            if not _hydrate_hc(cache, session_blob, project_blob):
                 return "Run clustering first."
             if not path or not str(path).strip():
                 return "Choose an export path (Browse)."

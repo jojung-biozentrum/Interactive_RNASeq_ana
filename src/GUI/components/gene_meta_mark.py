@@ -10,6 +10,14 @@ import plotly.graph_objects as go
 
 _COLOR_MARK = "#e41a1c"
 
+# Locus-lookup columns used for gene hover (and Gene expression profiles search).
+# From locus_lookup_biocyc_ids_handcurated.csv.
+GENE_HOVER_COLUMNS = (
+    "geneName",
+    "Gene name A1552",
+    "Gene name C6706",
+)
+
 
 def split_meta_tokens(value) -> list[str]:
     """Split a cell on ``;`` and strip empties."""
@@ -72,10 +80,17 @@ def filter_ids_by_search(
 
 def gene_meta_hover_map(
     lookup: pd.DataFrame | None,
-    columns: list[str] | None,
+    columns: list[str] | None = None,
 ) -> dict[str, str]:
-    """Map locusTag / geneID → ``<br>col: value`` lines for Plotly hover text."""
-    cols = [str(c) for c in (columns or []) if c]
+    """Map locusTag / geneID → ``<br>col: value`` lines for Plotly hover text.
+
+    ``columns`` defaults to ``GENE_HOVER_COLUMNS`` present in the lookup.
+    """
+    if columns is None:
+        have = set(map(str, lookup.columns)) if lookup is not None and not lookup.empty else set()
+        cols = [c for c in GENE_HOVER_COLUMNS if c in have]
+    else:
+        cols = [str(c) for c in columns if c]
     if (
         lookup is None
         or not isinstance(lookup, pd.DataFrame)
