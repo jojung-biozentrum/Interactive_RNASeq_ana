@@ -16,8 +16,6 @@ from scipy.stats import false_discovery_control
 from sklearn.decomposition import PCA
 
 from ..components.controls import (
-    EXPORT_H,
-    EXPORT_W,
     graph_export_config,
 )
 from ..components.gene_meta_mark import (
@@ -574,8 +572,6 @@ class ClusteringModule:
                                     config=graph_export_config(
                                         "hc_heatmap", width=760, height=640
                                     ),
-                                    responsive=True,
-                                    style={"width": "100%", "height": "640px"},
                                 ),
                                 type="default",
                             ),
@@ -667,8 +663,6 @@ class ClusteringModule:
                                         id="hc-pca",
                                         figure={},
                                         config=_GRAPH_CONFIG,
-                                        responsive=True,
-                                        style={"width": "100%", "height": f"{EXPORT_H}px"},
                                     ),
                                     md=5,
                                 ),
@@ -680,8 +674,6 @@ class ClusteringModule:
                                             config=graph_export_config(
                                                 "hc_dendrogram", height=360
                                             ),
-                                            responsive=True,
-                                            style={"width": "100%", "height": "360px"},
                                         ),
                                         html.P(
                                             "Select dendrogram clusters into Bin A or Bin B "
@@ -833,8 +825,6 @@ class ClusteringModule:
                                             config=graph_export_config(
                                                 "hc_volcano", width=640, height=520
                                             ),
-                                            responsive=True,
-                                            style={"width": "100%", "height": "520px"},
                                         ),
                                         md=8,
                                     ),

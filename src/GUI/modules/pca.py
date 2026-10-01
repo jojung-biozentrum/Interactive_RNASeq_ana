@@ -19,7 +19,6 @@ from src.GUI.components.gene_scores import (
 from .pc_ari import pc_separation_ari
 
 from ..components.controls import (
-    EXPORT_H,
     EXPORT_PCA_SCREE_H,
     EXPORT_W,
     aesthetic_options,
@@ -534,7 +533,6 @@ class PCAModule:
                         "pca-scatter",
                         "pca-sample-detail",
                         graph_config=_GRAPH_CONFIG,
-                        graph_style={"width": "100%", "height": f"{EXPORT_PCA_SCREE_H}px"},
                     ),
                     type="default",
                 ),
@@ -634,8 +632,6 @@ class PCAModule:
                 dcc.Graph(
                     id="pca-clf-perf",
                     figure=go.Figure(),
-                    responsive=True,
-                    style={"width": "100%", "height": f"{EXPORT_H}px"},
                     config=graph_export_config("pca_classifier_performance"),
                 ),
                 html.Div(id="pca-clf-status", className="text-muted small mb-2"),

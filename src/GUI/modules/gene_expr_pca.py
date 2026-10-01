@@ -32,7 +32,7 @@ from .clustering import _locus_path_from_session
 from .pca import _PCA_RUNTIME, _run_pca, _score_frame_for_plot
 
 _GRAPH_CONFIG = graph_export_config("gene_expression_profiles")
-_EXPR_COLS = 2
+_EXPR_COLS = 3
 _PANEL = 380  # square panel cell (px)
 _PANEL_MARGIN = dict(l=55, r=90, t=56, b=50)  # colorbar + titles
 _SEARCH_LIMIT = 80
@@ -468,7 +468,6 @@ class GeneExprPCAModule:
                         graph_config=_GRAPH_CONFIG,
                         graph_md=8,
                         detail_md=4,
-                        graph_style={"width": "100%", "height": "560px"},
                     ),
                     type="default",
                 ),
@@ -603,7 +602,7 @@ class GeneExprPCAModule:
             gxp_cache,
         ):
             empty = go.Figure()
-            style = {"width": "100%", "height": "560px"}
+            style = {}
             session = session_from_store(session_blob)
             if not session.ready or session.expression is None:
                 return empty, style, session.error or "Load a dataset first.", no_update

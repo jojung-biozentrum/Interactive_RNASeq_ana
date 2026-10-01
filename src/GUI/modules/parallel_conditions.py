@@ -14,7 +14,6 @@ from sklearn.decomposition import PCA
 
 from src.biocyc.celov_multiomics_post import load_locus_lookup
 from ..components.controls import (
-    EXPORT_H,
     SHAPE_CONSTANTS,
     apply_export_layout,
     equal_xy_axes,
@@ -1547,8 +1546,6 @@ class ParallelConditionsModule:
                     dcc.Graph(
                         id={"type": "par-pca-fig", "level": level},
                         figure=fig,
-                        responsive=True,
-                        style={"width": "100%", "height": f"{EXPORT_H}px"},
                         config=graph_export_config(f"par_pca_{level}"),
                     )
                 )

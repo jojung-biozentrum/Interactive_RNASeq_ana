@@ -15,8 +15,6 @@ from sklearn.decomposition import PCA
 
 from src.biocyc.celov_multiomics_post import load_locus_lookup
 from ..components.controls import (
-    EXPORT_H,
-    EXPORT_W,
     apply_export_layout,
     equal_xy_axes,
     graph_export_config,
@@ -709,7 +707,6 @@ class VolcanoConditionModule:
                         "vc-bins-pca-fig",
                         "vc-bins-sample-detail",
                         graph_config=_BINS_PCA_CONFIG,
-                        graph_style={"width": "100%", "height": f"{EXPORT_H}px"},
                     ),
                     type="default",
                 ),
@@ -776,8 +773,6 @@ class VolcanoConditionModule:
                                     id="vc-fig",
                                     figure={},
                                     config=_GRAPH_CONFIG,
-                                    responsive=True,
-                                    style={"width": "100%", "height": f"{EXPORT_H}px"},
                                 ),
                                 md=8,
                             ),

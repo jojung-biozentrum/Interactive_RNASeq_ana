@@ -192,21 +192,22 @@ def plot_with_sample_detail(
     graph_md: int = 8,
     detail_md: int = 4,
     graph_style: dict | None = None,
-    responsive: bool = True,
+    responsive: bool = False,
 ) -> dbc.Row:
-    style = {"width": "100%", "height": "560px"}
-    if graph_style:
-        style.update(graph_style)
+    """Graph + sample metadata. Display size comes from the figure layout (EXPORT_*)."""
+    graph_kwargs: dict = {
+        "id": graph_id,
+        "figure": {},
+        "config": graph_config or {},
+    }
+    if graph_style is not None:
+        graph_kwargs["style"] = graph_style
+    if responsive:
+        graph_kwargs["responsive"] = True
     return dbc.Row(
         [
             dbc.Col(
-                dcc.Graph(
-                    id=graph_id,
-                    figure={},
-                    config=graph_config or {},
-                    responsive=responsive,
-                    style=style,
-                ),
+                dcc.Graph(**graph_kwargs),
                 md=graph_md,
             ),
             dbc.Col(

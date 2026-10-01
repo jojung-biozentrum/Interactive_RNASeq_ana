@@ -8,8 +8,6 @@ import pandas as pd
 import plotly.graph_objects as go
 
 from ..components.controls import (
-    EXPORT_H,
-    EXPORT_W,
     aesthetic_options,
     aesthetic_panel,
     apply_export_layout,
@@ -371,7 +369,6 @@ class UMAPModule:
                         "umap-scatter",
                         "umap-sample-detail",
                         graph_config=_GRAPH_CONFIG,
-                        graph_style={"width": "100%", "height": f"{EXPORT_H}px"},
                     ),
                     type="default",
                 ),
