@@ -573,8 +573,8 @@ class PCAModule:
                 html.H6("Linear classifier"),
                 html.P(
                     "sklearn LogisticRegression on PC scores → train / CV balanced "
-                    "accuracy vs number of PCs, plus per-PC ARI; "
-                    "optional 2-PC decision boundary.",
+                    "accuracy vs number of PCs, with per-PC class end-split ARI "
+                    "(right axis). Optional 2-PC decision boundary.",
                     className="text-muted small",
                 ),
                 dbc.Row(
@@ -988,22 +988,18 @@ class PCAModule:
             dataset = _active_dataset_name(session_blob, active)
 
             if triggered in ("pca-clf-fig-w", "pca-clf-fig-h"):
-                if not clf_cache or not clf_cache.get("perf"):
+                if not clf_cache or not clf_cache.get("perf") or not clf_cache.get("ari"):
                     return no_update, no_update, no_update
                 perf = pd.DataFrame(clf_cache["perf"])
-                ari = (
-                    pd.DataFrame(clf_cache["ari"])
-                    if clf_cache.get("ari")
-                    else None
-                )
+                ari = pd.DataFrame(clf_cache["ari"])
                 fig = performance_figure(
                     perf,
+                    ari,
                     title=_plotly_title(
                         f"Linear Classifier on PCs for {dataset}",
                         f"split on {clf_cache.get('label_col')} "
                         f"(positive = {clf_cache.get('positive')})",
                     ),
-                    ari_df=ari,
                 )
                 return no_update, set_fig_size(fig, fig_w, fig_h), no_update
 
@@ -1017,17 +1013,14 @@ class PCAModule:
                 n_lo = int(pc_min or 2)
                 n_hi = int(pc_max or 12)
                 perf = classifier_performance(score_df, y, n_lo, n_hi)
-                try:
-                    ari = pc_separation_ari(score_df, label_col, positive, n_hi)
-                except Exception:  # noqa: BLE001
-                    ari = None
+                ari = pc_separation_ari(score_df, label_col, positive, n_hi)
                 fig = performance_figure(
                     perf,
+                    ari,
                     title=_plotly_title(
                         f"Linear Classifier on PCs for {dataset}",
                         f"split on {label_col} (positive = {positive})",
                     ),
-                    ari_df=ari,
                 )
                 fig = set_fig_size(fig, fig_w, fig_h)
                 res2 = fit_pc_classifier(score_df, y, 2)
@@ -1037,7 +1030,7 @@ class PCAModule:
                     "label_col": label_col,
                     "positive": str(positive),
                     "perf": perf.to_dict(orient="list") if perf is not None else {},
-                    "ari": ari.to_dict(orient="list") if ari is not None else {},
+                    "ari": ari.to_dict(orient="list"),
                     "w2": list(map(float, res2["w"])) if res2 else None,
                     "b2": float(res2["b"]) if res2 else None,
                     "cv2": float(res2["cv_acc"]) if res2 else None,
