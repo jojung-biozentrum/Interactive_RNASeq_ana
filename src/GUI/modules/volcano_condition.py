@@ -19,7 +19,6 @@ from ..components.controls import (
     EXPORT_W,
     apply_export_layout,
     equal_xy_axes,
-    for_viewer,
     graph_export_config,
 )
 from ..components.gene_meta_mark import (
@@ -898,7 +897,7 @@ class VolcanoConditionModule:
                 "groups": list(groups.astype(str)),
                 "title": title,
             }
-            return for_viewer(fig), _ok_status(msg), cache
+            return fig, _ok_status(msg), cache
 
         @app.callback(
             Output("vc-fig", "figure"),
@@ -991,7 +990,6 @@ class VolcanoConditionModule:
                 fold_change_threshold=float(fc_thr or 0.5),
                 hover_map=gene_meta_hover_map(lookup),
             )
-            fig = for_viewer(fig)
             mark_cols = locus_mark_columns(lookup)
             mark_opts = [{"label": c, "value": c} for c in mark_cols]
             wrap = {"display": "block"} if mark_cols else hide
@@ -1029,7 +1027,7 @@ class VolcanoConditionModule:
                 mark_label=mark_label,
                 hover_map=gene_meta_hover_map(lookup),
             )
-            return for_viewer(fig), mark_legend_banner(n_mark, mark_entry)
+            return fig, mark_legend_banner(n_mark, mark_entry)
 
         @app.callback(
             Output("vc-mark-entry", "options"),

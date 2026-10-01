@@ -15,7 +15,6 @@ from ..components.controls import (
     apply_export_layout,
     build_scatter,
     equal_xy_axes,
-    for_viewer,
     graph_export_config,
     parse_aes_choice,
 )
@@ -578,7 +577,7 @@ class UMAPModule:
                         raw.get("alpha"),
                         title=title,
                     )
-                return for_viewer(fig)
+                return fig
             except Exception as exc:  # noqa: BLE001
                 err = go.Figure()
                 err.add_annotation(text=f"Plot error: {exc}", showarrow=False)

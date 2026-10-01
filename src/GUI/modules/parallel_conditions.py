@@ -18,7 +18,6 @@ from ..components.controls import (
     SHAPE_CONSTANTS,
     apply_export_layout,
     equal_xy_axes,
-    for_viewer,
     graph_export_config,
     _LEGEND_GREY,
     _LEGEND_STD_SIZE,
@@ -1544,7 +1543,6 @@ class ParallelConditionsModule:
                         f"closest n={len(hl_map.get(level) or [])}",
                     ),
                 )
-                fig = for_viewer(fig)
                 panels.append(
                     dcc.Graph(
                         id={"type": "par-pca-fig", "level": level},

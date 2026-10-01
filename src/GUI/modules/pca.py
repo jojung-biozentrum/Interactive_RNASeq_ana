@@ -27,7 +27,6 @@ from ..components.controls import (
     apply_export_layout,
     build_scatter,
     equal_xy_axes,
-    for_viewer,
     graph_export_config,
     parse_aes_choice,
 )
@@ -938,15 +937,13 @@ class PCAModule:
                 n_hi = min(int(pc_max or 12), n_avail, _CACHE_N_PCS)
                 perf = classifier_performance(score_df, y, n_lo, n_hi)
                 ari = pc_separation_ari(score_df, label_col, positive, n_hi)
-                fig = for_viewer(
-                    performance_figure(
-                        perf,
-                        ari,
-                        title=_plotly_title(
-                            f"Linear Classifier on PCs for {dataset}",
-                            f"split on {label_col} (positive = {positive})",
-                        ),
-                    )
+                fig = performance_figure(
+                    perf,
+                    ari,
+                    title=_plotly_title(
+                        f"Linear Classifier on PCs for {dataset}",
+                        f"split on {label_col} (positive = {positive})",
+                    ),
                 )
                 res2 = fit_pc_classifier(score_df, y, 2)
                 new_cache = {
@@ -1035,7 +1032,7 @@ class PCAModule:
                     scatter = add_decision_boundary(
                         scatter, score_df, clf_cache["w2"], clf_cache["b2"], name=name
                     )
-                fig = for_viewer(_combine_pca_and_variance(scatter, var, title))
+                fig = _combine_pca_and_variance(scatter, var, title)
                 return fig
             except Exception as exc:  # noqa: BLE001
                 err = go.Figure()

@@ -19,7 +19,6 @@ from ..components.controls import (
     _point_symbols,
     aesthetic_options,
     apply_export_layout,
-    for_viewer,
     graph_export_config,
     parse_aes_choice,
 )
@@ -34,8 +33,18 @@ from .pca import _PCA_RUNTIME, _run_pca, _score_frame_for_plot
 
 _GRAPH_CONFIG = graph_export_config("gene_expression_profiles")
 _EXPR_COLS = 2
+_PANEL = 380  # square panel cell (px)
+_PANEL_MARGIN = dict(l=55, r=90, t=56, b=50)  # colorbar + titles
 _SEARCH_LIMIT = 80
 _GXP_RUNTIME: dict = {}
+
+
+def _gxp_fig_size(n_rows: int, n_cols: int, *, use_3d: bool = False) -> tuple[int, int]:
+    """Overall figure size so each subplot panel is roughly square."""
+    cell = _PANEL + (40 if use_3d else 0)
+    w = _PANEL_MARGIN["l"] + _PANEL_MARGIN["r"] + n_cols * cell
+    h = _PANEL_MARGIN["t"] + _PANEL_MARGIN["b"] + n_rows * cell
+    return int(w), int(h)
 
 
 def _plotly_title(*lines: str) -> dict:
@@ -169,6 +178,7 @@ def _expr_pca_figure(
     var_ratio,
     shape=None,
     size=None,
+    z_col=None,
 ) -> go.Figure:
     genes = [str(g) for g in genes if str(g) in expr.columns]
     empty = go.Figure()
@@ -179,15 +189,27 @@ def _expr_pca_figure(
     n_cols = min(_EXPR_COLS, n)
     n_rows = int(math.ceil(n / n_cols))
     titles_full = list(titles[:n]) + [""] * (n_rows * n_cols - n)
+    use_3d = bool(z_col) and z_col in score_df.columns
+    specs = (
+        [[{"type": "scatter3d"} for _ in range(n_cols)] for _ in range(n_rows)]
+        if use_3d
+        else None
+    )
     fig = make_subplots(
         rows=n_rows,
         cols=n_cols,
         subplot_titles=titles_full,
+        specs=specs,
         horizontal_spacing=0.10,
         vertical_spacing=0.12,
     )
     x = pd.to_numeric(score_df[x_col], errors="coerce").to_numpy(dtype=float)
     y = pd.to_numeric(score_df[y_col], errors="coerce").to_numpy(dtype=float)
+    z = (
+        pd.to_numeric(score_df[z_col], errors="coerce").to_numpy(dtype=float)
+        if use_3d
+        else None
+    )
     hover = score_df.index.astype(str).to_numpy()
     shape_col, shape_const, size_col, size_const = _resolve_shape_size(
         shape, size, score_df.columns
@@ -215,6 +237,7 @@ def _expr_pca_figure(
 
     x_label = _pc_axis_label(x_col)
     y_label = _pc_axis_label(y_col)
+    z_label = _pc_axis_label(z_col) if use_3d else ""
     for i, gene in enumerate(genes):
         row, col = i // n_cols + 1, i % n_cols + 1
         title = titles[i] if i < len(titles) else gene
@@ -225,37 +248,96 @@ def _expr_pca_figure(
         cmax = float(np.nanmax(finite)) if finite.size else 1.0
         if cmin == cmax:
             cmax = cmin + 1.0
-        fig.add_trace(
-            go.Scatter(
-                x=x,
-                y=y,
-                mode="markers",
-                marker=dict(
-                    color=color,
-                    colorscale="Viridis",
-                    showscale=(i == 0),
-                    colorbar=dict(thickness=12, outlinewidth=0) if i == 0 else None,
-                    cmin=cmin,
-                    cmax=cmax,
-                    symbol=symbols,
-                    size=sizes,
-                ),
-                customdata=np.stack([hover, color], axis=1),
-                hovertemplate=(
-                    "%{customdata[0]}<br>" + title + ": %{customdata[1]:.4g}<extra></extra>"
-                ),
-                showlegend=False,
-            ),
-            row=row,
-            col=col,
+        marker = dict(
+            color=color,
+            colorscale="Viridis",
+            showscale=(i == 0),
+            colorbar=dict(thickness=12, outlinewidth=0) if i == 0 else None,
+            cmin=cmin,
+            cmax=cmax,
+            symbol=symbols,
+            size=sizes,
         )
-        fig.update_xaxes(title_text=x_label if row == n_rows else "", row=row, col=col)
-        fig.update_yaxes(title_text=y_label if col == 1 else "", row=row, col=col)
+        if use_3d:
+            fig.add_trace(
+                go.Scatter3d(
+                    x=x,
+                    y=y,
+                    z=z,
+                    mode="markers",
+                    marker=marker,
+                    customdata=np.stack([hover, color], axis=1),
+                    hovertemplate=(
+                        "%{customdata[0]}<br>"
+                        + title
+                        + ": %{customdata[1]:.4g}<extra></extra>"
+                    ),
+                    showlegend=False,
+                ),
+                row=row,
+                col=col,
+            )
+            fig.update_scenes(
+                xaxis_title=x_label,
+                yaxis_title=y_label,
+                zaxis_title=z_label,
+                row=row,
+                col=col,
+            )
+        else:
+            fig.add_trace(
+                go.Scatter(
+                    x=x,
+                    y=y,
+                    mode="markers",
+                    marker=marker,
+                    customdata=np.stack([hover, color], axis=1),
+                    hovertemplate=(
+                        "%{customdata[0]}<br>"
+                        + title
+                        + ": %{customdata[1]:.4g}<extra></extra>"
+                    ),
+                    showlegend=False,
+                ),
+                row=row,
+                col=col,
+            )
+            fig.update_xaxes(title_text=x_label if row == n_rows else "", row=row, col=col)
+            fig.update_yaxes(title_text=y_label if col == 1 else "", row=row, col=col)
+    if not use_3d:
+        # Same square PC domain in every panel.
+        xmin, xmax = float(np.nanmin(x)), float(np.nanmax(x))
+        ymin, ymax = float(np.nanmin(y)), float(np.nanmax(y))
+        cx, cy = 0.5 * (xmin + xmax), 0.5 * (ymin + ymax)
+        half = 0.525 * max(xmax - xmin, ymax - ymin, 1e-9)
+        for gi in range(n):
+            row, col = gi // n_cols + 1, gi % n_cols + 1
+            fig.update_xaxes(
+                range=[cx - half, cx + half],
+                scaleanchor="y",
+                scaleratio=1,
+                constrain="domain",
+                row=row,
+                col=col,
+            )
+            fig.update_yaxes(
+                range=[cy - half, cy + half],
+                constrain="domain",
+                row=row,
+                col=col,
+            )
+    fig_w, fig_h = _gxp_fig_size(n_rows, n_cols, use_3d=use_3d)
     fig.update_layout(title=_plotly_title("Gene expression on PCA"))
     apply_export_layout(
-        fig, title_lines=1, legend=False, width=None, height=None
+        fig,
+        title_lines=1,
+        legend=False,
+        width=fig_w,
+        height=fig_h,
+        bottom=_PANEL_MARGIN["b"],
     )
-    return for_viewer(fig)
+    fig.update_layout(margin=dict(**_PANEL_MARGIN))
+    return fig
 
 
 class GeneExprPCAModule:
@@ -287,8 +369,28 @@ class GeneExprPCAModule:
                                     },
                                 ),
                             ],
-                            md=6,
+                            md=8,
                         ),
+                        dbc.Col(
+                            [
+                                html.Label("\u00a0"),
+                                dbc.Button(
+                                    "Add pasted IDs to selection",
+                                    id="gxp-ids-add",
+                                    color="secondary",
+                                    outline=True,
+                                    size="sm",
+                                    className="w-100",
+                                ),
+                            ],
+                            md=4,
+                            className="d-flex flex-column justify-content-end",
+                        ),
+                    ],
+                    className="g-2 mb-2",
+                ),
+                dbc.Row(
+                    [
                         dbc.Col(
                             [
                                 html.Label("Search / pick (all locus columns)"),
@@ -299,30 +401,37 @@ class GeneExprPCAModule:
                                     placeholder="Type 2+ characters…",
                                 ),
                             ],
-                            md=4,
+                            md=12,
                         ),
+                    ],
+                    className="g-2 mb-2",
+                ),
+                dbc.Row(
+                    [
                         dbc.Col(
                             [
                                 html.Label("X"),
                                 dcc.Dropdown(id="gxp-x", value="PC1", clearable=False),
-                                html.Label("Y", className="mt-2"),
+                            ],
+                            md=2,
+                        ),
+                        dbc.Col(
+                            [
+                                html.Label("Y"),
                                 dcc.Dropdown(id="gxp-y", value="PC2", clearable=False),
+                            ],
+                            md=2,
+                        ),
+                        dbc.Col(
+                            [
+                                html.Label("Z (optional 3D)"),
+                                dcc.Dropdown(id="gxp-z", placeholder="None", clearable=True),
                             ],
                             md=2,
                         ),
                     ],
                     className="g-2 mb-2",
                 ),
-                dbc.Button(
-                    "Add pasted IDs to selection",
-                    id="gxp-ids-add",
-                    color="secondary",
-                    outline=True,
-                    size="sm",
-                    className="me-2 mb-2",
-                ),
-                dbc.Button("Plot on PCA", id="gxp-run", color="primary", className="mb-2"),
-                html.Div(id="gxp-status", className="text-muted small mb-2"),
                 dbc.Row(
                     [
                         dbc.Col(
@@ -350,6 +459,8 @@ class GeneExprPCAModule:
                     ],
                     className="g-2 mb-2",
                 ),
+                dbc.Button("Plot on PCA", id="gxp-run", color="primary", className="mb-2"),
+                html.Div(id="gxp-status", className="text-muted small mb-2"),
                 dcc.Loading(
                     plot_with_sample_detail(
                         "gxp-fig",
@@ -424,12 +535,15 @@ class GeneExprPCAModule:
         @app.callback(
             Output("gxp-x", "options"),
             Output("gxp-y", "options"),
+            Output("gxp-z", "options"),
             Output("gxp-x", "value"),
             Output("gxp-y", "value"),
+            Output("gxp-z", "value"),
             Input("gxp-cache", "data"),
             Input("pca-cache", "data"),
+            State("gxp-z", "value"),
         )
-        def _axes(gxp_cache, pca_cache):
+        def _axes(gxp_cache, pca_cache, z_cur):
             n = int((pca_cache or {}).get("n_pcs") or 0)
             if not n and "score_df" in _PCA_RUNTIME:
                 n = sum(
@@ -441,7 +555,8 @@ class GeneExprPCAModule:
                 n = int(gxp_cache.get("n_pcs") or 0)
             pcs = [f"PC{i}" for i in range(1, max(n, 2) + 1)]
             opts = [{"label": c, "value": c} for c in pcs]
-            return opts, opts, "PC1", "PC2" if "PC2" in pcs else "PC1"
+            z_val = z_cur if z_cur in pcs else None
+            return opts, opts, opts, "PC1", "PC2" if "PC2" in pcs else "PC1", z_val
 
         @app.callback(
             Output("gxp-shape", "options"),
@@ -464,6 +579,7 @@ class GeneExprPCAModule:
             Input("gxp-size", "value"),
             Input("gxp-x", "value"),
             Input("gxp-y", "value"),
+            Input("gxp-z", "value"),
             State("session-store", "data"),
             State("project-store", "data"),
             State("pca-cache", "data"),
@@ -478,6 +594,7 @@ class GeneExprPCAModule:
             size,
             x_col,
             y_col,
+            z_col,
             session_blob,
             project_blob,
             pca_cache,
@@ -547,8 +664,11 @@ class GeneExprPCAModule:
             y_col = y_col if y_col in score_df.columns else (
                 "PC2" if "PC2" in score_df.columns else "PC1"
             )
-            n_rows = int(math.ceil(len(genes) / _EXPR_COLS))
-            style = {"width": "100%", "height": f"{max(420, 320 * n_rows)}px"}
+            z_col = z_col if z_col and z_col in score_df.columns else None
+            n_cols = min(_EXPR_COLS, len(genes))
+            n_rows = int(math.ceil(len(genes) / n_cols))
+            fig_w, fig_h = _gxp_fig_size(n_rows, n_cols, use_3d=bool(z_col))
+            style = {"width": f"{fig_w}px", "height": f"{fig_h}px"}
             try:
                 fig = _expr_pca_figure(
                     score_df,
@@ -560,6 +680,7 @@ class GeneExprPCAModule:
                     var,
                     shape=shape,
                     size=size,
+                    z_col=z_col,
                 )
             except Exception as exc:  # noqa: BLE001
                 return empty, style, f"Plot error: {exc}", no_update
@@ -569,7 +690,8 @@ class GeneExprPCAModule:
                 for c in score_df.columns
                 if str(c).startswith("PC") and str(c)[2:].isdigit()
             )
-            msg = f"Showing {len(genes)} gene(s) on {x_col} vs {y_col}."
+            axes = f"{x_col} vs {y_col}" + (f" vs {z_col}" if z_col else "")
+            msg = f"Showing {len(genes)} gene(s) on {axes}."
             return fig, style, msg, {"n_pcs": n_pcs, "genes": genes}
 
         register_sample_detail_callback(

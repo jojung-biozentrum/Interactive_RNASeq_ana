@@ -18,7 +18,6 @@ from sklearn.decomposition import PCA
 from ..components.controls import (
     EXPORT_H,
     EXPORT_W,
-    for_viewer,
     graph_export_config,
 )
 from ..components.gene_meta_mark import (
@@ -1055,7 +1054,7 @@ class ClusteringModule:
                 n = rt["n_samples"]
                 t = max(2, min(int(t or 2), n))
                 labels = _cut_clusters(rt["Z_samples"], t)
-                return for_viewer(_sample_distance_fig(rt, labels, dataset=dataset, t=t))
+                return _sample_distance_fig(rt, labels, dataset=dataset, t=t)
             except Exception as exc:  # noqa: BLE001
                 err = go.Figure()
                 err.add_annotation(text=f"Heatmap error: {exc}", showarrow=False)
@@ -1187,30 +1186,26 @@ class ClusteringModule:
                 f"in {dataset} ({t} clusters)",
             )
             try:
-                pca_fig = for_viewer(
-                    pca_cluster_fig(
-                        score_df,
-                        labels,
-                        x_col,
-                        y_col,
-                        z_col,
-                        selected=sel,
-                        bin_a=bins["a"],
-                        bin_b=bins["b"],
-                        alpha_a=float(alpha_a if alpha_a is not None else 1.0),
-                        alpha_b=float(alpha_b if alpha_b is not None else 1.0),
-                        title=pca_title,
-                    )
+                pca_fig = pca_cluster_fig(
+                    score_df,
+                    labels,
+                    x_col,
+                    y_col,
+                    z_col,
+                    selected=sel,
+                    bin_a=bins["a"],
+                    bin_b=bins["b"],
+                    alpha_a=float(alpha_a if alpha_a is not None else 1.0),
+                    alpha_b=float(alpha_b if alpha_b is not None else 1.0),
+                    title=pca_title,
                 )
-                dendro_fig = for_viewer(
-                    dendrogram_colored_fig(
-                        rt["Z_samples"],
-                        labels,
-                        rt["sample_ids"],
-                        selected=sel,
-                        bin_a=bins["a"],
-                        bin_b=bins["b"],
-                    )
+                dendro_fig = dendrogram_colored_fig(
+                    rt["Z_samples"],
+                    labels,
+                    rt["sample_ids"],
+                    selected=sel,
+                    bin_a=bins["a"],
+                    bin_b=bins["b"],
                 )
                 return pca_fig, dendro_fig
             except Exception as exc:  # noqa: BLE001
@@ -1401,7 +1396,6 @@ class ClusteringModule:
                 xaxis_title=x_label,
                 hover_map=gene_meta_hover_map(rt.get("locus_lookup")),
             )
-            fig = for_viewer(fig)
             mark_cols = locus_mark_columns(rt.get("locus_lookup"))
             mark_opts = [{"label": c, "value": c} for c in mark_cols]
             mark_wrap = show if mark_cols else hide
@@ -1443,7 +1437,7 @@ class ClusteringModule:
                 mark_label=mark_label,
                 hover_map=gene_meta_hover_map(_HC_RUNTIME.get("locus_lookup")),
             )
-            return for_viewer(fig), mark_legend_banner(n_mark, mark_label)
+            return fig, mark_legend_banner(n_mark, mark_label)
 
         @app.callback(
             Output("hc-volcano-mark-entry", "options"),
