@@ -329,6 +329,7 @@ def _run_hc(session: SessionData, *, method: str = "ward") -> dict:
 
 
 def _pack_hc_cache(rt: dict) -> dict:
+    """Persist linkage + PCA scores only (recompute distances from session on hydrate)."""
     score_df = rt["score_df"]
     n_pcs = sum(
         1 for c in score_df.columns if str(c).startswith("PC") and str(c)[2:].isdigit()
@@ -341,9 +342,29 @@ def _pack_hc_cache(rt: dict) -> dict:
         "method": rt["method"],
         "sample_ids": list(rt["sample_ids"]),
         "Z_samples": np.asarray(rt["Z_samples"], dtype=float).tolist(),
-        "dist_samples": np.asarray(rt["dist_samples"], dtype=float).tolist(),
         "scores": score_df.reset_index(names="_sample_id").to_dict(orient="list"),
     }
+
+
+def _ensure_hc_dist(rt: dict, session_blob=None) -> bool:
+    """Ensure ``dist_samples`` exists (from runtime or session expression)."""
+    dist = rt.get("dist_samples")
+    if dist is not None:
+        arr = np.asarray(dist)
+        if arr.ndim == 2 and arr.shape[0] == arr.shape[1] == int(rt.get("n_samples") or 0):
+            return True
+    X = rt.get("X")
+    if X is None and session_blob:
+        session = session_from_store(session_blob)
+        if session.ready and session.expression is not None:
+            X = session.numeric_matrix()
+            rt["X"] = X
+            rt["gene_ids"] = list(session.expression.columns.astype(str))
+            rt["n_genes"] = len(rt["gene_ids"])
+    if X is None:
+        return False
+    rt["dist_samples"] = squareform(pdist(X, metric="euclidean"))
+    return True
 
 
 def _hc_cache_sig(cache: dict | None) -> tuple | None:
@@ -370,12 +391,6 @@ def _hydrate_hc(cache: dict | None, session_blob=None, project_blob=None) -> boo
         and isinstance(_HC_RUNTIME.get("score_df"), pd.DataFrame)
         and "Z_samples" in _HC_RUNTIME
     ):
-        if _HC_RUNTIME.get("X") is None and session_blob:
-            session = session_from_store(session_blob)
-            if session.ready and session.expression is not None:
-                _HC_RUNTIME["X"] = session.numeric_matrix()
-                _HC_RUNTIME["gene_ids"] = list(session.expression.columns.astype(str))
-                _HC_RUNTIME["n_genes"] = len(_HC_RUNTIME["gene_ids"])
         if _HC_RUNTIME.get("locus_lookup") is None and session_blob is not None:
             path = _locus_path_from_session(session_blob, project_blob)
             if path:
@@ -383,8 +398,16 @@ def _hydrate_hc(cache: dict | None, session_blob=None, project_blob=None) -> boo
                     _HC_RUNTIME["locus_lookup"] = load_locus_lookup(path)
                 except Exception:  # noqa: BLE001
                     pass
+        _ensure_hc_dist(_HC_RUNTIME, session_blob)
         return True
     if sig is None:
+        # Same-worker fallback when Store did not round-trip the cache payload.
+        if (
+            isinstance(_HC_RUNTIME.get("score_df"), pd.DataFrame)
+            and "Z_samples" in _HC_RUNTIME
+        ):
+            _ensure_hc_dist(_HC_RUNTIME, session_blob)
+            return True
         return False
     score_df = pd.DataFrame(cache["scores"])
     if "_sample_id" in score_df.columns:
@@ -411,12 +434,15 @@ def _hydrate_hc(cache: dict | None, session_blob=None, project_blob=None) -> boo
         for k in ("volcano_results", "volcano_plot_meta")
         if k in _HC_RUNTIME and _HC_RUNTIME.get("_cache_sig") == sig
     }
+    dist = None
+    if cache.get("dist_samples") is not None:
+        dist = np.asarray(cache["dist_samples"], dtype=float)
     _HC_RUNTIME.clear()
     _HC_RUNTIME.update(
         {
             "_cache_sig": sig,
             "Z_samples": np.asarray(cache["Z_samples"], dtype=float),
-            "dist_samples": np.asarray(cache["dist_samples"], dtype=float),
+            "dist_samples": dist,
             "sample_ids": sample_ids,
             "gene_ids": gene_ids,
             "score_df": score_df,
@@ -428,6 +454,7 @@ def _hydrate_hc(cache: dict | None, session_blob=None, project_blob=None) -> boo
             **keep_volcano,
         }
     )
+    _ensure_hc_dist(_HC_RUNTIME, session_blob)
     return True
 
 
@@ -435,7 +462,11 @@ def _sample_distance_fig(rt: dict, sample_labels: np.ndarray, *, dataset: str, t
     ids = rt["sample_ids"]
     Z = rt["Z_samples"]
     dist = rt["dist_samples"]
-    _, leaf_c = _leaf_clusters_in_dendro_order(Z, sample_labels)
+    leaves, leaf_c = _leaf_clusters_in_dendro_order(Z, sample_labels)
+    ordered = [ids[i] for i in leaves]
+    # Click detail resolves cell (x,y) via these leaf-ordered ids (no n×n customdata).
+    rt["heat_row_ids"] = ordered
+    rt["heat_col_ids"] = ordered
     return heatmap_with_dendro(
         dist,
         ids,
@@ -486,7 +517,7 @@ class ClusteringModule:
                     id="hc-cut-section",
                     children=[
                         html.Hr(),
-                        html.H6("Cluster cut (samples)"),
+                        html.H6("Cluster cut"),
                         html.P(
                             "Set the total number of clusters, or find the first pure cluster "
                             "for a metadata column/value and color the clusters at that "
@@ -1166,8 +1197,18 @@ class ClusteringModule:
         def _plot_heatmap(cache, t, fig_w, fig_h, session_blob, project_blob):
             empty = go.Figure()
             if not _hydrate_hc(cache, session_blob, project_blob):
+                empty.add_annotation(
+                    text="Run clustering to show the heatmap.",
+                    showarrow=False,
+                )
                 return empty
             rt = _HC_RUNTIME
+            if not _ensure_hc_dist(rt, session_blob):
+                empty.add_annotation(
+                    text="Heatmap needs session expression to rebuild distances.",
+                    showarrow=False,
+                )
+                return empty
             dataset = _active_dataset_name(session_blob)
             try:
                 n = rt["n_samples"]

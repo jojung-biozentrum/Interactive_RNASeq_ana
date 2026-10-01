@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import re
 
 from dash import Dash, Input, Output, State, dcc, html, no_update
 import dash_bootstrap_components as dbc
@@ -29,14 +30,12 @@ from ..data_store import session_from_store
 from .clustering import _locus_path_from_session
 from .pca import _PCA_RUNTIME, _run_pca, _score_frame_for_plot
 
-# Search / pick fields: geneID plus hardcoded locus name columns.
-_NAME_FIELDS = ("geneID", *GENE_HOVER_COLUMNS)
-
 _GRAPH_CONFIG = {
     "toImageButtonOptions": {"format": "svg", "filename": "gene_expression_profiles"},
     "displaylogo": False,
 }
 _EXPR_COLS = 2
+_SEARCH_LIMIT = 80
 
 
 def _plotly_title(*lines: str) -> dict:
@@ -44,16 +43,19 @@ def _plotly_title(*lines: str) -> dict:
     return {"text": text, "x": 0.5, "xanchor": "center"}
 
 
-def _available_name_fields(lookup: pd.DataFrame | None) -> list[str]:
-    out = ["geneID"]
-    if lookup is None or lookup.empty:
-        return out
-    cols = {str(c) for c in lookup.columns}
-    for name in _NAME_FIELDS:
-        if name == "geneID":
+def _parse_gene_ids(text: str | None) -> list[str]:
+    """Split pasted geneIDs (same space-joined form as PCA Top genes)."""
+    if not text or not str(text).strip():
+        return []
+    parts = re.split(r"[\s,;]+", str(text).strip())
+    out: list[str] = []
+    seen: set[str] = set()
+    for p in parts:
+        gid = str(p).strip()
+        if not gid or gid in seen:
             continue
-        if name in cols:
-            out.append(name)
+        seen.add(gid)
+        out.append(gid)
     return out
 
 
@@ -65,30 +67,84 @@ def _lookup_id_col(lookup: pd.DataFrame) -> str | None:
     return None
 
 
-def _titles_for_genes(
-    genes: list[str],
-    field: str,
-    lookup: pd.DataFrame | None,
-) -> list[str]:
-    """Panel titles; pick values are always expression geneIDs."""
-    if (
-        field == "geneID"
-        or lookup is None
-        or lookup.empty
-        or field not in lookup.columns
-    ):
+def _display_name_from_row(row: pd.Series) -> str | None:
+    for col in GENE_HOVER_COLUMNS:
+        if col not in row.index:
+            continue
+        val = row.get(col)
+        if val is None or (isinstance(val, float) and pd.isna(val)):
+            continue
+        text = str(val).strip()
+        if text:
+            return text.split(";")[0].strip() or text
+    return None
+
+
+def _titles_for_genes(genes: list[str], lookup: pd.DataFrame | None) -> list[str]:
+    """Panel titles from locus name columns when available."""
+    if lookup is None or lookup.empty:
         return list(genes)
     id_col = _lookup_id_col(lookup)
     if id_col is None:
         return list(genes)
-    id_series = lookup[id_col].astype(str)
-    name_series = lookup[field].fillna("").astype(str)
-    titles: list[str] = []
-    for gid in genes:
-        hits = name_series[id_series == gid]
-        label = str(hits.iloc[0]) if len(hits) else ""
-        titles.append(f"{label} ({gid})" if label and label != gid else gid)
-    return titles
+    by_id: dict[str, str] = {}
+    for _, row in lookup.iterrows():
+        gid = str(row.get(id_col, "") or "")
+        if not gid or gid in by_id:
+            continue
+        label = _display_name_from_row(row)
+        if label and label != gid:
+            by_id[gid] = f"{label} ({gid})"
+    return [by_id.get(g, g) for g in genes]
+
+
+def _gene_pick_options(
+    expression: pd.DataFrame,
+    lookup: pd.DataFrame | None,
+    search: str | None,
+    selected,
+    *,
+    limit: int = _SEARCH_LIMIT,
+) -> list[dict]:
+    """Search geneID and all locus-lookup columns (2+ characters)."""
+    have = set(expression.columns.astype(str))
+    chosen = [str(x) for x in (selected or []) if str(x) in have]
+    opts = [{"label": g, "value": g} for g in chosen]
+    q = (search or "").strip().lower()
+    if len(q) < 2:
+        return opts
+    seen = set(chosen)
+    id_col = _lookup_id_col(lookup) if lookup is not None and not lookup.empty else None
+    if id_col is not None and lookup is not None:
+        for _, row in lookup.iterrows():
+            gid = str(row.get(id_col, "") or "")
+            if not gid or gid not in have or gid in seen:
+                continue
+            pieces = [gid]
+            for c in lookup.columns:
+                val = row.get(c)
+                if val is None or (isinstance(val, float) and pd.isna(val)):
+                    continue
+                text = str(val).strip()
+                if text:
+                    pieces.append(text)
+            if q not in " ".join(pieces).lower():
+                continue
+            display = _display_name_from_row(row)
+            label = f"{display} ({gid})" if display and display != gid else gid
+            opts.append({"label": label, "value": gid})
+            seen.add(gid)
+            if len(opts) >= limit:
+                return opts
+    for gid in expression.columns.astype(str):
+        if gid in seen:
+            continue
+        if q in gid.lower():
+            opts.append({"label": gid, "value": gid})
+            seen.add(gid)
+        if len(opts) >= limit:
+            break
+    return opts
 
 
 def _resolve_shape_size(shape, size, columns):
@@ -208,8 +264,8 @@ class GeneExprPCAModule:
         return html.Div(
             [
                 html.P(
-                    "Search / pick genes by a hardcoded name field. "
-                    "Color is always gene expression (viridis); after plotting, "
+                    "Paste geneIDs from PCA Top genes, and/or search any locus-lookup "
+                    "column (geneID, names, …). Color is gene expression (viridis); "
                     "shape / size can use metadata columns or fixed values.",
                     className="text-muted small",
                 ),
@@ -217,19 +273,23 @@ class GeneExprPCAModule:
                     [
                         dbc.Col(
                             [
-                                html.Label("Name field"),
-                                dcc.Dropdown(
-                                    id="gxp-name-field",
-                                    options=[{"label": f, "value": f} for f in ("geneID",)],
-                                    value="geneID",
-                                    clearable=False,
+                                html.Label("geneIDs (paste from PCA)"),
+                                dcc.Textarea(
+                                    id="gxp-gene-ids",
+                                    placeholder="e.g. PA0001 PA0002 …",
+                                    style={
+                                        "width": "100%",
+                                        "height": "72px",
+                                        "fontFamily": "monospace",
+                                        "fontSize": "12px",
+                                    },
                                 ),
                             ],
-                            md=3,
+                            md=6,
                         ),
                         dbc.Col(
                             [
-                                html.Label("Search / pick"),
+                                html.Label("Search / pick (all locus columns)"),
                                 dcc.Dropdown(
                                     id="gxp-gene-pick",
                                     multi=True,
@@ -237,24 +297,27 @@ class GeneExprPCAModule:
                                     placeholder="Type 2+ characters…",
                                 ),
                             ],
-                            md=5,
+                            md=4,
                         ),
                         dbc.Col(
                             [
                                 html.Label("X"),
                                 dcc.Dropdown(id="gxp-x", value="PC1", clearable=False),
-                            ],
-                            md=2,
-                        ),
-                        dbc.Col(
-                            [
-                                html.Label("Y"),
+                                html.Label("Y", className="mt-2"),
                                 dcc.Dropdown(id="gxp-y", value="PC2", clearable=False),
                             ],
                             md=2,
                         ),
                     ],
                     className="g-2 mb-2",
+                ),
+                dbc.Button(
+                    "Add pasted IDs to selection",
+                    id="gxp-ids-add",
+                    color="secondary",
+                    outline=True,
+                    size="sm",
+                    className="me-2 mb-2",
                 ),
                 dbc.Button("Plot on PCA", id="gxp-run", color="primary", className="mb-2"),
                 html.Div(id="gxp-status", className="text-muted small mb-2"),
@@ -296,13 +359,16 @@ class GeneExprPCAModule:
 
     def register_callbacks(self, app: Dash, *, readonly: bool = False) -> None:
         @app.callback(
-            Output("gxp-name-field", "options"),
-            Output("gxp-name-field", "value"),
+            Output("gxp-gene-pick", "options"),
+            Input("gxp-gene-pick", "search_value"),
+            Input("gxp-gene-pick", "value"),
             Input("session-store", "data"),
             Input("project-store", "data"),
-            State("gxp-name-field", "value"),
         )
-        def _fill_fields(session_blob, project_blob, current):
+        def _pick_options(search, selected, session_blob, project_blob):
+            session = session_from_store(session_blob)
+            if not session.ready or session.expression is None:
+                return []
             lookup = None
             path = _locus_path_from_session(session_blob, project_blob)
             if path:
@@ -310,64 +376,42 @@ class GeneExprPCAModule:
                     lookup = load_locus_lookup(path)
                 except Exception:  # noqa: BLE001
                     lookup = None
-            fields = _available_name_fields(lookup)
-            opts = [{"label": f, "value": f} for f in fields]
-            value = current if current in fields else fields[0]
-            return opts, value
+            return _gene_pick_options(session.expression, lookup, search, selected)
 
         @app.callback(
-            Output("gxp-gene-pick", "options"),
-            Input("gxp-name-field", "value"),
-            Input("gxp-gene-pick", "search_value"),
-            Input("gxp-gene-pick", "value"),
-            Input("session-store", "data"),
-            Input("project-store", "data"),
+            Output("gxp-gene-pick", "value"),
+            Output("gxp-status", "children", allow_duplicate=True),
+            Input("gxp-ids-add", "n_clicks"),
+            State("gxp-gene-ids", "value"),
+            State("gxp-gene-pick", "value"),
+            State("session-store", "data"),
+            prevent_initial_call=True,
         )
-        def _pick_options(field, search, selected, session_blob, project_blob):
+        def _add_pasted_ids(n_clicks, paste_text, selected, session_blob):
             session = session_from_store(session_blob)
             if not session.ready or session.expression is None:
-                return []
-            field = field or "geneID"
-            q = (search or "").strip().lower()
-            chosen = [str(x) for x in (selected or [])]
-            opts = [{"label": g, "value": g} for g in chosen]
-            if len(q) < 2:
-                return opts
-            seen = set(chosen)
-            if field == "geneID":
-                for gid in session.expression.columns.astype(str):
-                    if gid in seen:
-                        continue
-                    if q in gid.lower():
-                        opts.append({"label": gid, "value": gid})
-                        seen.add(gid)
-                    if len(opts) >= 80:
-                        break
-                return opts
-            path = _locus_path_from_session(session_blob, project_blob)
-            if not path:
-                return opts
-            try:
-                lookup = load_locus_lookup(path)
-            except Exception:  # noqa: BLE001
-                return opts
-            if field not in lookup.columns:
-                return opts
-            id_col = _lookup_id_col(lookup)
-            if id_col is None:
-                return opts
+                return no_update, session.error or "Load a dataset first."
             have = set(session.expression.columns.astype(str))
-            for _, row in lookup.iterrows():
-                label = str(row.get(field, "") or "")
-                gid = str(row.get(id_col, "") or "")
-                if not label or gid not in have or gid in seen:
-                    continue
-                if q in label.lower() or q in gid.lower():
-                    opts.append({"label": f"{label} ({gid})", "value": gid})
-                    seen.add(gid)
-                if len(opts) >= 80:
-                    break
-            return opts
+            chosen = [str(x) for x in (selected or []) if str(x) in have]
+            pasted = _parse_gene_ids(paste_text)
+            if not pasted:
+                return no_update, "Paste geneIDs first (from PCA Top genes)."
+            added = 0
+            missing = []
+            for gid in pasted:
+                if gid in have:
+                    if gid not in chosen:
+                        chosen.append(gid)
+                        added += 1
+                else:
+                    missing.append(gid)
+            msg = f"Added {added} geneID(s); selection has {len(chosen)}."
+            if missing:
+                msg += (
+                    f" Not in matrix: {', '.join(missing[:5])}"
+                    f"{'…' if len(missing) > 5 else ''}."
+                )
+            return chosen, msg
 
         @app.callback(
             Output("gxp-x", "options"),
@@ -416,8 +460,8 @@ class GeneExprPCAModule:
             State("session-store", "data"),
             State("project-store", "data"),
             State("pca-cache", "data"),
-            State("gxp-name-field", "value"),
             State("gxp-gene-pick", "value"),
+            State("gxp-gene-ids", "value"),
             State("gxp-cache", "data"),
             prevent_initial_call=True,
         )
@@ -432,8 +476,8 @@ class GeneExprPCAModule:
             session_blob,
             project_blob,
             pca_cache,
-            field,
             picked,
+            paste_text,
             gxp_cache,
         ):
             empty = go.Figure()
@@ -442,14 +486,22 @@ class GeneExprPCAModule:
                 return empty, session.error or "Load a dataset first.", no_update
             have = set(session.expression.columns.astype(str))
             genes = []
-            for t in picked or []:
-                gid = str(t)
+            for gid in list(picked or []) + _parse_gene_ids(paste_text):
+                gid = str(gid)
                 if gid in have and gid not in genes:
                     genes.append(gid)
             if not genes and gxp_cache and gxp_cache.get("genes"):
                 genes = [g for g in gxp_cache["genes"] if g in have]
             if not genes:
-                return empty, "Pick at least one gene.", no_update
+                missing = [g for g in _parse_gene_ids(paste_text) if g not in have]
+                if missing:
+                    return (
+                        empty,
+                        f"No matching geneIDs in matrix "
+                        f"(e.g. {', '.join(missing[:5])}{'…' if len(missing) > 5 else ''}).",
+                        no_update,
+                    )
+                return empty, "Paste or pick at least one geneID.", no_update
             lookup = None
             path = _locus_path_from_session(session_blob, project_blob)
             if path:
@@ -457,7 +509,7 @@ class GeneExprPCAModule:
                     lookup = load_locus_lookup(path)
                 except Exception:  # noqa: BLE001
                     lookup = None
-            titles = _titles_for_genes(genes, field or "geneID", lookup)
+            titles = _titles_for_genes(genes, lookup)
             score_df = _score_frame_for_plot(pca_cache)
             var = list((pca_cache or {}).get("var_ratio") or [])
             if score_df is None or not any(

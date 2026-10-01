@@ -149,13 +149,9 @@ def heatmap_with_dendro(
         z = z[:, col_order]
         col_labels = [col_labels[i] for i in col_order]
 
-    custom = np.empty(z.shape, dtype=object)
-    text_hover = np.empty(z.shape, dtype=object)
-    for i, r in enumerate(row_labels):
-        for j, c in enumerate(col_labels):
-            custom[i, j] = f"{r}||{c}"
-            text_hover[i, j] = f"row: {r}<br>col: {c}"
-
+    # Do not attach n×n customdata/text — that made the Dash figure response so
+    # large the Graph never updated (empty axes after Loading). Clicks use x/y
+    # indices with leaf-ordered labels stored by the caller.
     has_row = Z_row is not None
     has_col = Z_col is not None
     fig = make_subplots(
@@ -168,12 +164,17 @@ def heatmap_with_dendro(
         specs=[[{"type": "xy"}, {"type": "xy"}], [{"type": "xy"}, {"type": "xy"}]],
     )
 
-    if has_col:
+    def _add_dendro_traces(Z, *, orientation: str, leaf_clusters, row: int, col: int) -> None:
+        # One Scatter per color (segments joined with None) instead of one trace
+        # per branch — keeps figure JSON small enough for Dash/gunicorn.
+        by_color: dict[str, tuple[list[float], list[float]]] = {}
         for xs, ys, color in dendro_polylines(
-            Z_col,
-            orientation="top",
-            leaf_clusters=col_leaf_clusters,
+            Z, orientation=orientation, leaf_clusters=leaf_clusters
         ):
+            bucket = by_color.setdefault(color, ([], []))
+            bucket[0].extend(xs)
+            bucket[1].extend(ys)
+        for color, (xs, ys) in by_color.items():
             fig.add_trace(
                 go.Scatter(
                     x=xs,
@@ -183,9 +184,18 @@ def heatmap_with_dendro(
                     hoverinfo="skip",
                     showlegend=False,
                 ),
-                row=1,
-                col=2,
+                row=row,
+                col=col,
             )
+
+    if has_col:
+        _add_dendro_traces(
+            Z_col,
+            orientation="top",
+            leaf_clusters=col_leaf_clusters,
+            row=1,
+            col=2,
+        )
         # Axis label on top of the column dendrogram (e.g. "Genes")
         fig.update_xaxes(
             range=[-0.5, n_col - 0.5],
@@ -201,23 +211,13 @@ def heatmap_with_dendro(
         fig.update_yaxes(visible=False, row=1, col=2)
 
     if has_row:
-        for xs, ys, color in dendro_polylines(
+        _add_dendro_traces(
             Z_row,
             orientation="left",
             leaf_clusters=row_leaf_clusters,
-        ):
-            fig.add_trace(
-                go.Scatter(
-                    x=xs,
-                    y=ys,
-                    mode="lines",
-                    line=dict(color=color, width=1.5),
-                    hoverinfo="skip",
-                    showlegend=False,
-                ),
-                row=2,
-                col=1,
-            )
+            row=2,
+            col=1,
+        )
         fig.update_xaxes(visible=False, row=2, col=1)
         # Leaf 0 at top — same as heatmap; label left of row dendrogram (e.g. "Samples")
         fig.update_yaxes(
@@ -237,9 +237,7 @@ def heatmap_with_dendro(
             x=list(range(n_col)),
             y=list(range(n_row)),
             colorscale=colorscale,
-            customdata=custom,
-            text=text_hover,
-            hovertemplate="%{text}<br>value=%{z:.4g}<extra></extra>",
+            hovertemplate="value=%{z:.4g}<extra></extra>",
             colorbar=dict(
                 title=dict(text=colorbar_title, side="right"),
                 len=0.55,
@@ -618,9 +616,19 @@ def detail_from_heatmap_click(
         return sample_detail_placeholder()
     point = click_data["points"][0]
     custom = point.get("customdata")
-    if not custom or not isinstance(custom, str) or "||" not in custom:
-        return html.P("Click a heatmap cell.", className="text-muted small mb-0")
-    row_id, col_id = custom.split("||", 1)
+    if isinstance(custom, str) and "||" in custom:
+        row_id, col_id = custom.split("||", 1)
+    else:
+        try:
+            yi = int(round(float(point.get("y"))))
+            xi = int(round(float(point.get("x"))))
+        except (TypeError, ValueError):
+            return html.P("Click a heatmap cell.", className="text-muted small mb-0")
+        row_ids = list(rt.get("heat_row_ids") or [])
+        col_ids = list(rt.get("heat_col_ids") or [])
+        if yi < 0 or xi < 0 or yi >= len(row_ids) or xi >= len(col_ids):
+            return html.P("Click a heatmap cell.", className="text-muted small mb-0")
+        row_id, col_id = str(row_ids[yi]), str(col_ids[xi])
     score_df = rt.get("score_df")
     sample_ids = list(rt.get("sample_ids") or [])
     locus_lookup = rt.get("locus_lookup")
