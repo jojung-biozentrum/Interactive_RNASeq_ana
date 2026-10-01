@@ -48,7 +48,7 @@ from .pca_classifier import (
 
 _AES_ALL = "__all__"
 _AES_PREFIX = "pca-aes"
-_CACHE_N_PCS = 50
+_CACHE_N_PCS = 20  # persisted in pca-cache (gunicorn-safe); gene tables use this
 _GRAPH_CONFIG = {
     "toImageButtonOptions": {"format": "svg", "filename": "pca_plot"},
     "displaylogo": False,
@@ -60,7 +60,9 @@ _DEFAULT_AES = {
     "alpha": 0.85,
 }
 
-# Server-side PCA result (full scores / loadings) — local single-user app
+# Server-side PCA result (full scores / loadings) — local single-user app.
+# With gunicorn multi-worker this is best-effort; pca-cache holds the first
+# ``_CACHE_N_PCS`` components for cross-worker gene tables / classifier.
 _PCA_RUNTIME: dict = {}
 
 
@@ -370,15 +372,26 @@ def _scatter_split(score_df, x_col, y_col, z_col, split_col, group_aes: dict, va
     return fig
 
 
-def _cache_plot_frame(score_df: pd.DataFrame) -> dict:
+def _pc_column_names(n_pcs: int) -> list[str]:
+    return [f"PC{i}" for i in range(1, int(n_pcs) + 1)]
+
+
+def _cache_plot_frame(score_df: pd.DataFrame, n_pcs: int = _CACHE_N_PCS) -> dict:
     pc_like = sorted(
         (c for c in score_df.columns if c.startswith("PC") and c[2:].isdigit()),
         key=lambda c: int(c[2:]),
     )
-    keep = pc_like[:_CACHE_N_PCS]
+    keep = pc_like[: int(n_pcs)]
     meta_cols = [c for c in score_df.columns if c not in set(pc_like)]
     slim = score_df.loc[:, keep + meta_cols].copy().reset_index(names="_sample_id")
     return slim.to_dict(orient="list")
+
+
+def _pack_loadings(loadings: pd.DataFrame, n_pcs: int) -> dict:
+    cols = [c for c in _pc_column_names(n_pcs) if c in loadings.columns]
+    slim = loadings.loc[:, cols].copy()
+    slim.index = slim.index.astype(str)
+    return slim.reset_index(names="geneID").to_dict(orient="list")
 
 
 def _frame_from_cache(cache: dict) -> pd.DataFrame | None:
@@ -390,10 +403,33 @@ def _frame_from_cache(cache: dict) -> pd.DataFrame | None:
     return df
 
 
+def _loadings_from_cache(cache: dict) -> pd.DataFrame | None:
+    if not cache or "loadings" not in cache:
+        return None
+    df = pd.DataFrame(cache["loadings"])
+    if df.empty or "geneID" not in df.columns:
+        return None
+    return df.set_index("geneID")
+
+
 def _score_frame_for_plot(cache: dict) -> pd.DataFrame | None:
     if "score_df" in _PCA_RUNTIME and isinstance(_PCA_RUNTIME["score_df"], pd.DataFrame):
         return _PCA_RUNTIME["score_df"]
     return _frame_from_cache(cache)
+
+
+def _pca_fit_frames(cache: dict):
+    """score_df, loadings, explained_variance — runtime if present, else pca-cache."""
+    score_df = _score_frame_for_plot(cache)
+    if "loadings" in _PCA_RUNTIME and "explained_variance" in _PCA_RUNTIME:
+        return (
+            score_df,
+            _PCA_RUNTIME["loadings"],
+            np.asarray(_PCA_RUNTIME["explained_variance"], dtype=float),
+        )
+    loadings = _loadings_from_cache(cache)
+    var = np.asarray((cache or {}).get("explained_variance") or [], dtype=float)
+    return score_df, loadings, var
 
 
 class PCAModule:
@@ -603,16 +639,16 @@ class PCAModule:
                         dbc.Col(
                             [
                                 html.Label("PCs max"),
-                                dbc.Input(id="pca-clf-pc-max", type="number", value=12, min=2, step=1),
+                                dbc.Input(
+                                    id="pca-clf-pc-max",
+                                    type="number",
+                                    value=12,
+                                    min=2,
+                                    max=_CACHE_N_PCS,
+                                    step=1,
+                                ),
                             ],
                             md=1,
-                        ),
-                        dbc.Col(
-                            [
-                                html.Label("Genes: n PCs"),
-                                dbc.Input(id="pca-clf-gene-pcs", type="number", value=5, min=2, step=1),
-                            ],
-                            md=2,
                         ),
                         dbc.Col(
                             [
@@ -720,14 +756,28 @@ class PCAModule:
                 html.Div(id="pca-clf-status", className="text-muted small mb-2"),
                 html.H6("Top classifier genes", className="mt-3"),
                 html.P(
-                    "Uses “Genes: n PCs” above.",
+                    "Refit gene weights for the chosen number of PCs (same labels as the run).",
                     className="text-muted small",
                 ),
                 dbc.Row(
                     [
                         dbc.Col(
                             [
-                                html.Label("Top N"),
+                                html.Label("Genes: n PCs"),
+                                dbc.Input(
+                                    id="pca-clf-gene-pcs",
+                                    type="number",
+                                    value=5,
+                                    min=2,
+                                    max=_CACHE_N_PCS,
+                                    step=1,
+                                ),
+                            ],
+                            md=2,
+                        ),
+                        dbc.Col(
+                            [
+                                html.Label("Top N (|w|)"),
                                 dbc.Input(
                                     id="pca-clf-topn",
                                     type="number",
@@ -880,25 +930,28 @@ class PCAModule:
                         "var_ratio": list(map(float, var_ratio)),
                     }
                 )
-                n_pcs = int(len(var_ratio))
-                opts = _pc_options(n_pcs)
+                n_keep = min(_CACHE_N_PCS, int(len(var_ratio)))
+                opts = _pc_options(n_keep)
                 cache = {
-                    "scores": _cache_plot_frame(score_df),
-                    "var_ratio": list(map(float, var_ratio)),
-                    "n_pcs": n_pcs,
+                    "scores": _cache_plot_frame(score_df, n_keep),
+                    "loadings": _pack_loadings(loadings, n_keep),
+                    "explained_variance": list(map(float, explained_var[:n_keep])),
+                    "var_ratio": list(map(float, var_ratio[:n_keep])),
+                    "n_pcs": n_keep,
                 }
                 return (
                     cache,
-                    f"PCA done: {score_df.shape[0]} samples, {n_pcs} components.",
+                    f"PCA done: {score_df.shape[0]} samples, "
+                    f"{len(var_ratio)} components (keeping first {n_keep}).",
                     None,
                     opts,
                     opts,
                     opts,
                     opts,
-                    "PC1" if n_pcs >= 1 else None,
-                    "PC2" if n_pcs >= 2 else ("PC1" if n_pcs >= 1 else None),
+                    "PC1" if n_keep >= 1 else None,
+                    "PC2" if n_keep >= 2 else ("PC1" if n_keep >= 1 else None),
                     None,
-                    "PC1" if n_pcs >= 1 else None,
+                    "PC1" if n_keep >= 1 else None,
                 )
             except Exception as exc:  # noqa: BLE001
                 return (
@@ -917,18 +970,27 @@ class PCAModule:
 
         @app.callback(
             Output("pca-clf-label", "options"),
+            Output("pca-clf-label", "value"),
             Input("session-store", "data"),
             Input("pca-cache", "data"),
+            State("pca-clf-label", "value"),
         )
-        def _fill_clf_label(session_blob, cache):
+        def _fill_clf_label(session_blob, cache, current):
             cols = _meta_columns(session_blob, cache)
-            return [{"label": c, "value": c} for c in cols]
+            opts = [{"label": c, "value": c} for c in cols]
+            if current in cols:
+                value = current
+            elif "Biofilm" in cols:
+                value = "Biofilm"
+            else:
+                value = cols[0] if cols else None
+            return opts, value
 
         @app.callback(
             Output("pca-clf-positive", "options"),
             Output("pca-clf-positive", "value"),
             Input("pca-clf-label", "value"),
-            State("pca-cache", "data"),
+            Input("pca-cache", "data"),
             State("pca-clf-positive", "value"),
         )
         def _fill_positive(label_col, cache, current):
@@ -939,7 +1001,12 @@ class PCAModule:
                 return [], None
             levels = sorted(str(v) for v in df[label_col].dropna().astype(str).unique())
             opts = [{"label": v, "value": v} for v in levels]
-            value = current if current in levels else (levels[-1] if levels else None)
+            if current in levels:
+                value = current
+            elif "True" in levels:
+                value = "True"
+            else:
+                value = levels[-1] if levels else None
             return opts, value
 
         @app.callback(
@@ -963,7 +1030,6 @@ class PCAModule:
             State("pca-clf-positive", "value"),
             State("pca-clf-pc-min", "value"),
             State("pca-clf-pc-max", "value"),
-            State("pca-clf-gene-pcs", "value"),
             State("pca-clf-cache", "data"),
             State("session-store", "data"),
             State("ds-active", "value"),
@@ -978,7 +1044,6 @@ class PCAModule:
             positive,
             pc_min,
             pc_max,
-            gene_pcs,
             clf_cache,
             session_blob,
             active,
@@ -1003,15 +1068,20 @@ class PCAModule:
                 )
                 return no_update, set_fig_size(fig, fig_w, fig_h), no_update
 
-            if not cache or "score_df" not in _PCA_RUNTIME:
+            score_df, loadings, explained_var = _pca_fit_frames(cache)
+            if score_df is None or loadings is None or loadings.empty:
                 return no_update, empty, "Run PCA first."
             if not label_col or positive is None or positive == "":
                 return no_update, empty, "Choose label column and positive class."
             try:
-                score_df = _PCA_RUNTIME["score_df"]
                 y = encode_binary_labels(score_df[label_col], positive)
                 n_lo = int(pc_min or 2)
-                n_hi = int(pc_max or 12)
+                n_avail = sum(
+                    1
+                    for c in score_df.columns
+                    if str(c).startswith("PC") and str(c)[2:].isdigit()
+                )
+                n_hi = min(int(pc_max or 12), n_avail, _CACHE_N_PCS)
                 perf = classifier_performance(score_df, y, n_lo, n_hi)
                 ari = pc_separation_ari(score_df, label_col, positive, n_hi)
                 fig = performance_figure(
@@ -1024,8 +1094,6 @@ class PCAModule:
                 )
                 fig = set_fig_size(fig, fig_w, fig_h)
                 res2 = fit_pc_classifier(score_df, y, 2)
-                n_gene = int(gene_pcs or 5)
-                res_g = fit_pc_classifier(score_df, y, n_gene)
                 new_cache = {
                     "label_col": label_col,
                     "positive": str(positive),
@@ -1034,18 +1102,8 @@ class PCAModule:
                     "w2": list(map(float, res2["w"])) if res2 else None,
                     "b2": float(res2["b"]) if res2 else None,
                     "cv2": float(res2["cv_acc"]) if res2 else None,
-                    "gene_pcs": n_gene,
-                    "w_gene": list(map(float, res_g["w"])) if res_g else None,
-                    "train_gene": float(res_g["train_acc"]) if res_g else None,
-                    "cv_gene": float(res_g["cv_acc"]) if res_g else None,
                 }
-                msg = (
-                    f"Classifier done. 2-PC CV={new_cache['cv2']:.3f}; "
-                    f"{n_gene}-PC train={new_cache['train_gene']:.3f}, CV={new_cache['cv_gene']:.3f}."
-                    if res2 and res_g
-                    else "Classifier finished with missing fits (check class sizes / n_pcs)."
-                )
-                return new_cache, fig, msg
+                return new_cache, fig, ""
             except Exception as exc:  # noqa: BLE001
                 return no_update, empty, f"Classifier error: {exc}"
 
@@ -1150,13 +1208,14 @@ class PCAModule:
             Input("pca-weight-topn", "value"),
         )
         def _pc_gene_table(cache, pc, topn):
-            if not cache or "loadings" not in _PCA_RUNTIME or not pc:
+            _score_df, loadings, _var = _pca_fit_frames(cache)
+            if loadings is None or loadings.empty or not pc:
                 return html.P(
                     "Run PCA and choose a PC.",
                     className="text-muted small mb-0",
                 )
             try:
-                weighed = weighed_genes_from_pc(_PCA_RUNTIME["loadings"], str(pc))
+                weighed = weighed_genes_from_pc(loadings, str(pc))
                 return _gene_weight_table(_top_weighed(weighed, topn))
             except Exception as exc:  # noqa: BLE001
                 return html.P(f"Could not list genes: {exc}", className="text-danger small mb-0")
@@ -1164,23 +1223,49 @@ class PCAModule:
         @app.callback(
             Output("pca-clf-gene-table", "children"),
             Input("pca-clf-cache", "data"),
+            Input("pca-cache", "data"),
             Input("pca-clf-topn", "value"),
             Input("pca-clf-gene-pcs", "value"),
         )
-        def _clf_gene_table(clf_cache, topn, gene_pcs):
-            if not clf_cache or not clf_cache.get("w_gene"):
+        def _clf_gene_table(clf_cache, pca_cache, topn, gene_pcs):
+            if not clf_cache:
                 return html.P(
                     "Run the linear classifier first.",
                     className="text-muted small mb-0",
                 )
-            if "loadings" not in _PCA_RUNTIME or "explained_variance" not in _PCA_RUNTIME:
+            score_df, loadings, explained_var = _pca_fit_frames(pca_cache)
+            if score_df is None or loadings is None or loadings.empty:
                 return html.P("Run PCA first.", className="text-muted small mb-0")
+            label_col = clf_cache.get("label_col")
+            positive = clf_cache.get("positive")
+            if not label_col or positive is None or positive == "":
+                return html.P(
+                    "Classifier cache missing label / positive class.",
+                    className="text-muted small mb-0",
+                )
             try:
-                n_gene = int(gene_pcs or clf_cache.get("gene_pcs") or 5)
+                n_avail = sum(
+                    1
+                    for c in score_df.columns
+                    if str(c).startswith("PC") and str(c)[2:].isdigit()
+                )
+                n_gene = min(
+                    int(gene_pcs or clf_cache.get("gene_pcs") or 5),
+                    n_avail,
+                    _CACHE_N_PCS,
+                )
+                y = encode_binary_labels(score_df[label_col], positive)
+                res = fit_pc_classifier(score_df, y, n_gene)
+                if not res:
+                    return html.P(
+                        f"Could not fit classifier on {n_gene} PCs "
+                        "(check class sizes / n_pcs).",
+                        className="text-danger small mb-0",
+                    )
                 weighed = weighed_genes_from_classifier(
-                    _PCA_RUNTIME["loadings"],
-                    _PCA_RUNTIME["explained_variance"],
-                    clf_cache["w_gene"],
+                    loadings,
+                    explained_var,
+                    res["w"],
                     n_gene,
                 )
                 return _gene_weight_table(_top_weighed(weighed, topn))
@@ -1255,6 +1340,7 @@ class PCAModule:
         @app.callback(
             Output("pca-status", "children", allow_duplicate=True),
             Input("pca-weight-save", "n_clicks"),
+            State("pca-cache", "data"),
             State("pca-weight-pc", "value"),
             State("pca-weight-out", "value"),
             State("pca-weight-celov-mode", "value"),
@@ -1263,8 +1349,9 @@ class PCAModule:
             State("ds-active", "value"),
             prevent_initial_call=True,
         )
-        def _save_pc_celov(n_clicks, pc, out_path, mode, locus_path, project_blob, active):
-            if "loadings" not in _PCA_RUNTIME:
+        def _save_pc_celov(n_clicks, pca_cache, pc, out_path, mode, locus_path, project_blob, active):
+            _score_df, loadings, _var = _pca_fit_frames(pca_cache)
+            if loadings is None or loadings.empty:
                 return "Run PCA first."
             if not pc:
                 return "Choose a PC for weighed genes."
@@ -1273,7 +1360,7 @@ class PCAModule:
             try:
                 from src.biocyc.celov_multiomics_post import load_locus_lookup
 
-                weighed = weighed_genes_from_pc(_PCA_RUNTIME["loadings"], str(pc))
+                weighed = weighed_genes_from_pc(loadings, str(pc))
                 lookup = None
                 if locus_path and str(locus_path).strip():
                     lookup = load_locus_lookup(str(locus_path).strip())
@@ -1339,6 +1426,7 @@ class PCAModule:
             Output("pca-clf-status", "children", allow_duplicate=True),
             Input("pca-clf-celov-save", "n_clicks"),
             State("pca-clf-cache", "data"),
+            State("pca-cache", "data"),
             State("pca-clf-celov-out", "value"),
             State("pca-clf-celov-mode", "value"),
             State("pca-clf-locus", "value"),
@@ -1348,22 +1436,48 @@ class PCAModule:
             prevent_initial_call=True,
         )
         def _save_celov(
-            n_clicks, clf_cache, out_path, mode, locus_path, gene_pcs, project_blob, active
+            n_clicks,
+            clf_cache,
+            pca_cache,
+            out_path,
+            mode,
+            locus_path,
+            gene_pcs,
+            project_blob,
+            active,
         ):
-            if not clf_cache or not clf_cache.get("w_gene"):
+            if not clf_cache:
                 return "Run the linear classifier first."
             if not out_path or not str(out_path).strip():
                 return "Choose an output .txt path (Browse)."
-            if "loadings" not in _PCA_RUNTIME:
+            score_df, loadings, explained_var = _pca_fit_frames(pca_cache)
+            if score_df is None or loadings is None or loadings.empty:
                 return "Run PCA first."
+            label_col = clf_cache.get("label_col")
+            positive = clf_cache.get("positive")
+            if not label_col or positive is None or positive == "":
+                return "Classifier cache missing label / positive class."
             try:
                 from src.biocyc.celov_multiomics_post import load_locus_lookup
 
-                n_pcs = int(clf_cache.get("gene_pcs") or gene_pcs or 5)
+                n_avail = sum(
+                    1
+                    for c in score_df.columns
+                    if str(c).startswith("PC") and str(c)[2:].isdigit()
+                )
+                n_pcs = min(
+                    int(gene_pcs or clf_cache.get("gene_pcs") or 5),
+                    n_avail,
+                    _CACHE_N_PCS,
+                )
+                y = encode_binary_labels(score_df[label_col], positive)
+                res = fit_pc_classifier(score_df, y, n_pcs)
+                if not res:
+                    return f"Could not fit classifier on {n_pcs} PCs."
                 weighed = build_weighed_genes(
-                    _PCA_RUNTIME["loadings"],
-                    _PCA_RUNTIME["explained_variance"],
-                    np.asarray(clf_cache["w_gene"], dtype=float),
+                    loadings,
+                    explained_var,
+                    res["w"],
                     n_pcs,
                 )
                 lookup = None

@@ -66,6 +66,7 @@ from .gene_gradients import (
 )
 
 _PAR_RUNTIME: dict = {}
+_PAR_CACHE_N_PCS = 20
 
 
 def _plotly_title(*lines: str) -> dict:
@@ -151,23 +152,6 @@ def closest_non_bio_cluster(X: np.ndarray, labels: np.ndarray, is_bio: np.ndarra
     return best_c, best_d
 
 
-def unique_sets(by_region: dict[str, set[str]], regions: list[str]) -> dict[str, set[str]]:
-    unique = {}
-    for r in regions:
-        others = [by_region[o] for o in regions if o != r]
-        u = by_region[r] - set.union(*others) if others else set(by_region[r])
-        unique[r] = u if u else set(by_region[r])
-    return unique
-
-
-def unique_sets_strict(by_region: dict[str, set[str]], regions: list[str]) -> dict[str, set[str]]:
-    unique = {}
-    for r in regions:
-        others = [by_region[o] for o in regions if o != r]
-        unique[r] = by_region[r] - (set.union(*others) if others else set())
-    return unique
-
-
 def _symbol_for(symbol: str, is_3d: bool) -> str:
     symbol = str(symbol or "circle")
     if not is_3d:
@@ -179,13 +163,106 @@ def _symbol_for(symbol: str, is_3d: bool) -> str:
 
 def _fit_par_pca(X: pd.DataFrame, meta: pd.DataFrame) -> pd.DataFrame:
     arr = np.asarray(X, dtype=float)
-    n_pcs = max(2, min(50, int(arr.shape[0]) - 1, int(arr.shape[1])))
+    n_pcs = max(2, min(_PAR_CACHE_N_PCS, int(arr.shape[0]) - 1, int(arr.shape[1])))
     scores = PCA(n_components=n_pcs).fit_transform(arr)
     cols = [f"PC{i + 1}" for i in range(n_pcs)]
     score_df = pd.DataFrame(scores, index=X.index.astype(str), columns=cols)
     if meta is not None:
         score_df = score_df.join(meta.reindex(score_df.index))
     return score_df
+
+
+def _pack_score_df(score_df: pd.DataFrame) -> dict:
+    return score_df.reset_index(names="_sample_id").to_dict(orient="list")
+
+
+def _unpack_score_df(cache: dict | None) -> pd.DataFrame | None:
+    if not cache or "scores" not in cache:
+        return None
+    df = pd.DataFrame(cache["scores"])
+    if "_sample_id" in df.columns:
+        df = df.set_index("_sample_id")
+    df.index = df.index.astype(str)
+    return df
+
+
+def _pack_level_detail(level_detail: dict) -> dict:
+    out = {}
+    for level, info in (level_detail or {}).items():
+        labels = info.get("labels")
+        if isinstance(labels, pd.Series) and len(labels):
+            lab_ids = list(labels.index.astype(str))
+            lab_vals = [int(v) for v in labels.to_numpy()]
+        else:
+            lab_ids, lab_vals = [], []
+        out[str(level)] = {
+            "bio_ids": list(map(str, info.get("bio_ids") or [])),
+            "label_ids": lab_ids,
+            "label_vals": lab_vals,
+            "closest_c": info.get("closest_c"),
+        }
+    return out
+
+
+def _unpack_level_detail(blob: dict | None) -> dict:
+    out = {}
+    for level, info in (blob or {}).items():
+        ids = list(info.get("label_ids") or [])
+        vals = list(info.get("label_vals") or [])
+        labels = (
+            pd.Series(vals, index=pd.Index(ids, dtype=object), dtype=int)
+            if ids
+            else pd.Series(dtype=int)
+        )
+        out[str(level)] = {
+            "bio_ids": set(map(str, info.get("bio_ids") or [])),
+            "labels": labels,
+            "closest_c": info.get("closest_c"),
+        }
+    return out
+
+
+def _closest_from_cache(cache: dict | None) -> dict[str, set[str]]:
+    return {str(k): set(map(str, v or [])) for k, v in ((cache or {}).get("closest") or {}).items()}
+
+
+def _hydrate_par_from_cache(cache: dict | None, session_blob=None) -> bool:
+    """Rebuild ``_PAR_RUNTIME`` from ``par-cache`` (+ session) for multi-worker use."""
+    if not cache:
+        return False
+    if isinstance(_PAR_RUNTIME.get("score_df"), pd.DataFrame) and _PAR_RUNTIME.get("closest"):
+        return True
+    score_df = _unpack_score_df(cache)
+    if score_df is None:
+        return False
+    levels = list(cache.get("levels") or [])
+    order_col = cache.get("order_col")
+    closest = _closest_from_cache(cache)
+    level_detail = _unpack_level_detail(cache.get("level_detail"))
+    X = meta = is_bio = None
+    if session_blob:
+        session = session_from_store(session_blob)
+        if session.ready and session.expression is not None:
+            X = session.expression.copy()
+            X.index = X.index.astype(str)
+            meta = session.metadata.reindex(X.index) if session.metadata is not None else None
+            sub_col = cache.get("subset_col")
+            sub_val = cache.get("subset_val")
+            if meta is not None and sub_col and sub_val is not None and sub_col in meta.columns:
+                is_bio = _subset_mask(meta, sub_col, str(sub_val)).reindex(X.index).fillna(False)
+    _PAR_RUNTIME.update(
+        {
+            "closest": closest,
+            "level_detail": level_detail,
+            "score_df": score_df,
+            "levels": levels,
+            "order_col": order_col,
+            "X": X if X is not None else _PAR_RUNTIME.get("X"),
+            "meta": meta if meta is not None else _PAR_RUNTIME.get("meta"),
+            "is_bio": is_bio if is_bio is not None else _PAR_RUNTIME.get("is_bio"),
+        }
+    )
+    return True
 
 
 def _scatter_trace(
@@ -690,10 +767,7 @@ def run_per_level_clusters(
             }
         )
     summary = pd.DataFrame(rows)
-    unique = unique_sets(closest, regions)
-    unique_strict = unique_sets_strict(closest, regions)
-    summary["n_unique"] = summary["region"].map(lambda r: len(unique_strict[r]))
-    return summary, closest, unique, unique_strict, level_detail
+    return summary, closest, level_detail
 
 
 class ParallelConditionsModule:
@@ -750,8 +824,7 @@ class ParallelConditionsModule:
                 html.Div(id="par-summary"),
                 html.H6("PCA per level", className="mt-3"),
                 html.P(
-                    "Level samples black (α 0.7, shape by cluster); highlighted samples "
-                    "crimson; others grey (α 0.1). Four panels per row.",
+                    "Closest LC cluster samples α=1; other points α=0.2. Four panels per row.",
                     className="text-muted small",
                 ),
                 dbc.Row(
@@ -778,29 +851,22 @@ class ParallelConditionsModule:
                             md=2,
                         ),
                         dbc.Col(
-                            [
-                                html.Label("Highlight"),
-                                dcc.RadioItems(
-                                    id="par-pca-hl",
-                                    options=[
-                                        {"label": " closest", "value": "closest"},
-                                        {"label": " unique closest", "value": "unique"},
-                                    ],
-                                    value="closest",
-                                    inline=True,
-                                ),
-                            ],
-                            md=3,
+                            fig_size_controls(
+                                "par-pca",
+                                default_width=EXPORT_W,
+                                default_height=EXPORT_H,
+                                heading="PCA size (px)",
+                            ),
+                            md=6,
                         ),
                     ],
-                    className="g-2 mb-1",
+                    className="g-2 mb-2",
                 ),
+                dbc.Button("Plot PCA", id="par-pca-run", color="primary", className="mb-2"),
                 html.P(
-                    "Closest: non-subset samples in the LC cluster nearest that level. "
-                    "Unique closest: closest minus samples also closest to another level "
-                    "(empty unique → all closest). Closest α=1; other points α=0.2. "
-                    "Color / shape / size use metadata columns (like PCA).",
-                    className="text-muted small",
+                    "After plotting, color / shape / size style closest samples "
+                    "(metadata columns, like PCA).",
+                    className="text-muted small mb-1",
                 ),
                 dbc.Row(
                     [
@@ -809,30 +875,21 @@ class ParallelConditionsModule:
                                 html.Label("Color (closest)"),
                                 dcc.Dropdown(id="par-pca-color-col", clearable=True),
                             ],
-                            md=3,
+                            md=4,
                         ),
                         dbc.Col(
                             [
                                 html.Label("Shape (closest)"),
                                 dcc.Dropdown(id="par-pca-shape-col", clearable=True),
                             ],
-                            md=3,
+                            md=4,
                         ),
                         dbc.Col(
                             [
                                 html.Label("Size (closest)"),
                                 dcc.Dropdown(id="par-pca-size-col", clearable=True),
                             ],
-                            md=3,
-                        ),
-                        dbc.Col(
-                            fig_size_controls(
-                                "par-pca",
-                                default_width=EXPORT_W,
-                                default_height=EXPORT_H,
-                                heading="PCA size (px)",
-                            ),
-                            md=3,
+                            md=4,
                         ),
                     ],
                     className="g-2 mb-2",
@@ -857,35 +914,16 @@ class ParallelConditionsModule:
             [
                 html.H6("Pooled gene gradients"),
                 html.P(
-                    "Run on closest or uniquely-close samples, then click a gene or "
-                    "pick IDs below for profiles. Shown: Pearson and Spearman vs "
-                    "dynamic range, and each measure as levels (x) vs closest (y).",
+                    "Run on closest samples, then click a gene or pick IDs below for "
+                    "profiles. Pearson / Spearman vs dynamic range, and levels (x) vs "
+                    "closest (y).",
                     className="text-muted small",
                 ),
-                dbc.Row(
-                    [
-                        dbc.Col(
-                            dcc.RadioItems(
-                                id="par-grad-mode",
-                                options=[
-                                    {"label": " closest", "value": "closest"},
-                                    {"label": " uniquely-close", "value": "unique"},
-                                ],
-                                value="closest",
-                                inline=True,
-                            ),
-                            md=6,
-                        ),
-                        dbc.Col(
-                            dbc.Button(
-                                "Run pooled gradients",
-                                id="par-grad-run",
-                                color="primary",
-                            ),
-                            md=3,
-                        ),
-                    ],
-                    className="g-2 mb-2",
+                dbc.Button(
+                    "Run pooled gradients",
+                    id="par-grad-run",
+                    color="primary",
+                    className="mb-2",
                 ),
                 html.Div(id="par-grad-status", className="text-muted small mb-2"),
                 dbc.Row(
@@ -1228,7 +1266,7 @@ class ParallelConditionsModule:
             meta = meta.reindex(X.index)
             is_bio = is_bio.reindex(X.index).fillna(False)
             try:
-                summary, closest, unique, unique_strict, level_detail = run_per_level_clusters(
+                summary, closest, level_detail = run_per_level_clusters(
                     X, meta, is_bio, order_col, levels
                 )
                 score_df = _fit_par_pca(X, meta)
@@ -1246,8 +1284,6 @@ class ParallelConditionsModule:
                 {
                     "summary": summary,
                     "closest": closest,
-                    "unique": unique,
-                    "unique_strict": unique_strict,
                     "level_detail": level_detail,
                     "score_df": score_df,
                     "meta": meta,
@@ -1256,10 +1292,28 @@ class ParallelConditionsModule:
                     "levels": levels,
                     "order_col": order_col,
                     "locus_lookup": lookup,
+                    "subset_col": sub_col,
+                    "subset_val": str(sub_val),
                 }
             )
+            n_pcs = sum(
+                1
+                for c in score_df.columns
+                if str(c).startswith("PC") and str(c)[2:].isdigit()
+            )
+            cache = {
+                "n_regions": len(levels),
+                "n_pcs": n_pcs,
+                "levels": levels,
+                "order_col": order_col,
+                "subset_col": sub_col,
+                "subset_val": str(sub_val),
+                "closest": {k: list(v) for k, v in closest.items()},
+                "level_detail": _pack_level_detail(level_detail),
+                "scores": _pack_score_df(score_df),
+            }
             return (
-                {"n_regions": len(levels)},
+                cache,
                 f"Per-level Ward done for {len(levels)} levels.",
                 table_html(summary),
             )
@@ -1286,43 +1340,63 @@ class ParallelConditionsModule:
             Input("par-cache", "data"),
         )
         def _fill_par_pca_axes(cache):
-            score_df = _PAR_RUNTIME.get("score_df")
-            if score_df is None or not cache:
+            if not cache:
                 return [], [], [], None, None, None
-            pcs = [
-                c
-                for c in score_df.columns
-                if str(c).startswith("PC") and str(c)[2:].isdigit()
-            ]
+            score_df = _PAR_RUNTIME.get("score_df")
+            if not isinstance(score_df, pd.DataFrame):
+                score_df = _unpack_score_df(cache)
+            if score_df is None:
+                n = int(cache.get("n_pcs") or 0)
+                pcs = [f"PC{i}" for i in range(1, max(n, 0) + 1)]
+            else:
+                pcs = [
+                    c
+                    for c in score_df.columns
+                    if str(c).startswith("PC") and str(c)[2:].isdigit()
+                ]
+            if not pcs:
+                return [], [], [], None, None, None
             opts = [{"label": c, "value": c} for c in pcs]
             return (
                 opts,
                 opts,
                 opts,
-                "PC1" if "PC1" in pcs else (pcs[0] if pcs else None),
-                "PC2" if "PC2" in pcs else (pcs[1] if len(pcs) > 1 else None),
+                "PC1" if "PC1" in pcs else pcs[0],
+                "PC2" if "PC2" in pcs else (pcs[1] if len(pcs) > 1 else pcs[0]),
                 None,
             )
 
         @app.callback(
             Output("par-pca-panels", "children"),
-            Input("par-cache", "data"),
-            Input("par-pca-x", "value"),
-            Input("par-pca-y", "value"),
-            Input("par-pca-z", "value"),
-            Input("par-pca-hl", "value"),
+            Input("par-pca-run", "n_clicks"),
             Input("par-pca-color-col", "value"),
             Input("par-pca-shape-col", "value"),
             Input("par-pca-size-col", "value"),
             Input("par-pca-fig-w", "value"),
             Input("par-pca-fig-h", "value"),
+            State("par-cache", "data"),
+            State("session-store", "data"),
+            State("par-pca-x", "value"),
+            State("par-pca-y", "value"),
+            State("par-pca-z", "value"),
+            prevent_initial_call=True,
         )
         def _plot_par_pca(
-            cache, x_col, y_col, z_col, hl_mode, color_col, shape_col, size_col, fig_w, fig_h
+            n_clicks,
+            color_col,
+            shape_col,
+            size_col,
+            fig_w,
+            fig_h,
+            cache,
+            session_blob,
+            x_col,
+            y_col,
+            z_col,
         ):
-            if not cache or "score_df" not in _PAR_RUNTIME:
+            if not cache or not _hydrate_par_from_cache(cache, session_blob):
                 return html.P(
-                    "Run per-level clustering to show PCA.",
+                    "Run per-level clustering, then Plot PCA.",
                     className="text-muted small mb-0",
                 )
             score_df = _PAR_RUNTIME["score_df"]
@@ -1336,13 +1410,7 @@ class ParallelConditionsModule:
             z_col = z_col if z_col in score_df.columns else None
             if not x_col or not y_col:
                 return html.P("PCA has no components to plot.", className="text-muted small mb-0")
-            hl_mode = "unique" if hl_mode == "unique" else "closest"
-            hl_name = "unique closest" if hl_mode == "unique" else "closest"
-            hl_map = (
-                _PAR_RUNTIME.get("unique")
-                if hl_mode == "unique"
-                else _PAR_RUNTIME.get("closest")
-            ) or {}
+            hl_map = _PAR_RUNTIME.get("closest") or {}
             detail = _PAR_RUNTIME.get("level_detail") or {}
             levels = list(_PAR_RUNTIME.get("levels") or [])
             panels = []
@@ -1364,7 +1432,7 @@ class ParallelConditionsModule:
                     bio_ids=set(info.get("bio_ids") or []),
                     labels=labels,
                     highlight_ids=set(hl_map.get(level) or []),
-                    highlight_name=hl_name,
+                    highlight_name="closest",
                     x_col=x_col,
                     y_col=y_col,
                     z_col=z_col,
@@ -1373,7 +1441,7 @@ class ParallelConditionsModule:
                     size_col=size_col,
                     title=_plotly_title(
                         f"PCA · {level}",
-                        f"{hl_name} n={len(hl_map.get(level) or [])}",
+                        f"closest n={len(hl_map.get(level) or [])}",
                     ),
                 )
                 fig = set_fig_size(fig, fig_w, fig_h)
@@ -1402,9 +1470,10 @@ class ParallelConditionsModule:
             Output("par-pca-sample-detail", "children"),
             Input({"type": "par-pca-fig", "level": ALL}, "clickData"),
             Input("par-cache", "data"),
+            State("session-store", "data"),
         )
-        def _par_pca_sample(clicks, cache):
-            if not cache or "score_df" not in _PAR_RUNTIME:
+        def _par_pca_sample(clicks, cache, session_blob):
+            if not cache or not _hydrate_par_from_cache(cache, session_blob):
                 return sample_detail_placeholder()
             triggered = callback_context.triggered_id
             if triggered == "par-cache" or not any(clicks or []):
@@ -1430,20 +1499,21 @@ class ParallelConditionsModule:
             Output("par-grad-genes", "value", allow_duplicate=True),
             Output("par-grad-selected", "data", allow_duplicate=True),
             Input("par-grad-run", "n_clicks"),
-            State("par-grad-mode", "value"),
+            State("par-cache", "data"),
+            State("session-store", "data"),
+            State("project-store", "data"),
             prevent_initial_call=True,
         )
-        def _grads(n_clicks, mode):
-            if "closest" not in _PAR_RUNTIME:
+        def _grads(n_clicks, par_cache, session_blob, project_blob):
+            if not par_cache or not _hydrate_par_from_cache(par_cache, session_blob):
                 return no_update, "Run per-level clustering first.", no_update, no_update
-            X = _PAR_RUNTIME["X"]
-            levels = _PAR_RUNTIME["levels"]
-            if mode == "unique":
-                by_level = _PAR_RUNTIME.get("unique") or {}
-                label = "uniquely-close"
-            else:
-                by_level = _PAR_RUNTIME.get("closest") or {}
-                label = "closest"
+            X = _PAR_RUNTIME.get("X")
+            meta_all = _PAR_RUNTIME.get("meta")
+            is_bio = _PAR_RUNTIME.get("is_bio")
+            if X is None or meta_all is None or is_bio is None:
+                return no_update, "Run per-level clustering first.", no_update, no_update
+            levels = list(_PAR_RUNTIME.get("levels") or [])
+            by_level = _PAR_RUNTIME.get("closest") or {}
             order_col = _PAR_RUNTIME.get("order_col") or "region"
             samples = []
             labels = []
@@ -1453,11 +1523,10 @@ class ParallelConditionsModule:
                         samples.append(sid)
                         labels.append(region)
             if len(samples) < 3:
-                return no_update, f"Fewer than 3 {label} samples.", no_update, no_update
+                return no_update, "Fewer than 3 closest samples.", no_update, no_update
             expr = X.loc[samples].T
             meta_close = pd.DataFrame({order_col: labels}, index=samples)
-            is_bio = _PAR_RUNTIME["is_bio"].reindex(X.index).fillna(False)
-            meta_all = _PAR_RUNTIME["meta"]
+            is_bio = is_bio.reindex(X.index).fillna(False)
             bio_keep = is_bio & meta_all[order_col].astype(str).isin(levels)
             bio_ids = [str(s) for s in meta_all.index[bio_keep] if str(s) in X.index]
             if len(bio_ids) < 3:
@@ -1485,15 +1554,34 @@ class ParallelConditionsModule:
             bio = results_bio.set_index("geneID")
             results["pearson_rho_biofilm"] = results["geneID"].map(bio["pearson_rho"])
             results["spearman_rho_biofilm"] = results["geneID"].map(bio["spearman_rho"])
+            lookup = _PAR_RUNTIME.get("locus_lookup")
+            if lookup is None:
+                locus = _locus_path_from_session(session_blob, project_blob)
+                if locus:
+                    try:
+                        lookup = load_locus_lookup(locus)
+                    except Exception:  # noqa: BLE001
+                        lookup = None
+                _PAR_RUNTIME["locus_lookup"] = lookup
             _PAR_RUNTIME["grad_results"] = results
             _PAR_RUNTIME["grad_expr"] = expr
             _PAR_RUNTIME["grad_meta"] = meta_close
             _PAR_RUNTIME["grad_expr_bio"] = expr_bio
             _PAR_RUNTIME["grad_meta_bio"] = meta_bio
-            _PAR_RUNTIME["grad_mode"] = label
+            _PAR_RUNTIME["grad_mode"] = "closest"
             return (
-                {"n": len(samples), "mode": label, "n_genes": int(len(results))},
-                f"Pooled gradients on {len(samples)} {label} samples.",
+                {
+                    "n": len(samples),
+                    "mode": "closest",
+                    "n_genes": int(len(results)),
+                    "results": results.to_dict(orient="list"),
+                    "levels": levels,
+                    "order_col": order_col,
+                    "close_sample_ids": samples,
+                    "close_labels": labels,
+                    "bio_ids": bio_ids,
+                },
+                f"Pooled gradients on {len(samples)} closest samples.",
                 [],
                 [],
             )
@@ -1507,7 +1595,9 @@ class ParallelConditionsModule:
         )
         def _par_grad_gene_options(cache, search, selected, clicked):
             results = _PAR_RUNTIME.get("grad_results")
-            if not cache or results is None:
+            if results is None and cache and cache.get("results"):
+                results = pd.DataFrame(cache["results"])
+            if not cache or results is None or results.empty:
                 return []
             chosen = list(selected or []) + list(clicked or [])
             hits = filter_ids_by_search(results["geneID"].astype(str), search, chosen)
@@ -1525,17 +1615,30 @@ class ParallelConditionsModule:
             Input("par-grad-dr-s", "value"),
             Input("par-grad-selected", "data"),
             Input("ds-gene-meta-cols", "value"),
+            State("session-store", "data"),
+            State("project-store", "data"),
         )
-        def _replot_par_grads(cache, rho_p, dr_p, rho_s, dr_s, selected, gene_meta_cols):
+        def _replot_par_grads(
+            cache, rho_p, dr_p, rho_s, dr_s, selected, gene_meta_cols, session_blob, project_blob
+        ):
             empty = go.Figure()
             results = _PAR_RUNTIME.get("grad_results")
-            if not cache or results is None:
+            if results is None and cache and cache.get("results"):
+                results = pd.DataFrame(cache["results"])
+                _PAR_RUNTIME["grad_results"] = results
+            if not cache or results is None or results.empty:
                 return empty, empty, empty, empty
             mark = {str(g) for g in (selected or []) if g}
             mode = cache.get("mode") or "closest"
-            hover_map = gene_meta_hover_map(
-                _PAR_RUNTIME.get("locus_lookup"), list(gene_meta_cols or [])
-            )
+            lookup = _PAR_RUNTIME.get("locus_lookup")
+            if lookup is None:
+                locus = _locus_path_from_session(session_blob, project_blob)
+                if locus:
+                    try:
+                        lookup = load_locus_lookup(locus)
+                    except Exception:  # noqa: BLE001
+                        lookup = None
+            hover_map = gene_meta_hover_map(lookup, list(gene_meta_cols or []))
             pearson = gradient_scatter_fig(
                 results,
                 "pearson",
@@ -1623,15 +1726,38 @@ class ParallelConditionsModule:
             Input("par-grad-selected", "data"),
             Input("par-grad-cache", "data"),
             Input("par-grad-rep-col", "value"),
+            State("session-store", "data"),
         )
-        def _par_profiles(selected, cache, rep_col):
+        def _par_profiles(selected, cache, rep_col, session_blob):
+            order_col = (cache or {}).get("order_col") or _PAR_RUNTIME.get("order_col") or "region"
+            levels = list((cache or {}).get("levels") or _PAR_RUNTIME.get("levels") or [])
+            results = _PAR_RUNTIME.get("grad_results")
+            if results is None and cache and cache.get("results"):
+                results = pd.DataFrame(cache["results"])
             expr = _PAR_RUNTIME.get("grad_expr")
             meta = _PAR_RUNTIME.get("grad_meta")
             expr_bio = _PAR_RUNTIME.get("grad_expr_bio")
             meta_bio = _PAR_RUNTIME.get("grad_meta_bio")
-            levels = _PAR_RUNTIME.get("levels") or []
-            order_col = _PAR_RUNTIME.get("order_col") or "region"
-            results = _PAR_RUNTIME.get("grad_results")
+            if (
+                (expr is None or meta is None or expr_bio is None or meta_bio is None)
+                and cache
+                and session_blob
+            ):
+                session = session_from_store(session_blob)
+                if session.ready and session.expression is not None:
+                    X = session.expression.copy()
+                    X.index = X.index.astype(str)
+                    meta_all = session.metadata.reindex(X.index) if session.metadata is not None else None
+                    close_ids = list(cache.get("close_sample_ids") or [])
+                    close_labs = list(cache.get("close_labels") or [])
+                    bio_ids = [s for s in (cache.get("bio_ids") or []) if s in X.index]
+                    close_ids = [s for s in close_ids if s in X.index]
+                    if close_ids and bio_ids and meta_all is not None:
+                        expr = X.loc[close_ids].T
+                        meta = pd.DataFrame({order_col: close_labs[: len(close_ids)]}, index=close_ids)
+                        expr_bio = X.loc[bio_ids].T
+                        meta_bio = meta_all.loc[bio_ids].copy()
+                        meta_bio[order_col] = meta_bio[order_col].astype(str)
             if not cache or expr is None or meta is None or expr_bio is None or meta_bio is None:
                 return gene_profile_grid_fig(
                     [],
@@ -1682,6 +1808,7 @@ class ParallelConditionsModule:
         @app.callback(
             Output("par-grad-celov-status", "children"),
             Input("par-grad-celov-save", "n_clicks"),
+            State("par-grad-cache", "data"),
             State("par-grad-celov-out", "value"),
             State("par-grad-celov-mode", "value"),
             State("par-grad-celov-score", "value"),
@@ -1689,8 +1816,12 @@ class ParallelConditionsModule:
             State("project-store", "data"),
             prevent_initial_call=True,
         )
-        def _save_par_grad_celov(n_clicks, out_path, mode, score_col, session_blob, project_blob):
+        def _save_par_grad_celov(
+            n_clicks, grad_cache, out_path, mode, score_col, session_blob, project_blob
+        ):
             results = _PAR_RUNTIME.get("grad_results")
+            if results is None and grad_cache and grad_cache.get("results"):
+                results = pd.DataFrame(grad_cache["results"])
             if results is None or not isinstance(results, pd.DataFrame) or results.empty:
                 return "Run pooled gradients first."
             if not out_path or not str(out_path).strip():

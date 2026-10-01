@@ -35,7 +35,12 @@ from ..components.gene_meta_mark import (
     mark_controls,
     mark_legend_banner,
 )
-from ..components.sample_detail import gene_detail_placeholder, gene_detail_table
+from ..components.sample_detail import (
+    gene_detail_placeholder,
+    gene_detail_table,
+    plot_with_sample_detail,
+    register_sample_detail_callback,
+)
 from ..data_store import session_from_store
 from .clustering import (
     _active_dataset_entry,
@@ -532,13 +537,13 @@ def _group_pca_fig(
         color="group",
         category_orders={"group": present},
         color_discrete_map=_BIN_COLORS,
-        hover_name="_id",
+        custom_data=["_id"],
     )
-    fig.update_traces(hovertemplate="%{hovertext}<extra></extra>")
+    fig.update_traces(hovertemplate="%{customdata[0]}<extra></extra>")
     fig = equal_xy_axes(fig, df, "PC1", "PC2")
     title_dict = title if isinstance(title, dict) else _plotly_title(str(title))
     title_lines = str(title_dict.get("text", "")).count("<br>") + 1
-    fig.update_layout(title=title_dict)
+    fig.update_layout(title=title_dict, clickmode="event+select")
     apply_export_layout(
         fig,
         title_lines=title_lines,
@@ -549,15 +554,19 @@ def _group_pca_fig(
     return fig
 
 
-def _sample_bins_pca(session, groups: pd.Series, title: str) -> tuple[go.Figure, str]:
+def _sample_bins_pca(
+    session, groups: pd.Series, title: str
+) -> tuple[go.Figure, str, pd.DataFrame]:
     X = session.numeric_matrix()
     pca = PCA()
     scores = pca.fit_transform(X)
     score_df = pd.DataFrame(
         scores[:, :2],
-        index=session.expression.index,
+        index=session.expression.index.astype(str),
         columns=["PC1", "PC2"],
     )
+    if session.metadata is not None:
+        score_df = score_df.join(session.metadata)
     fig = _group_pca_fig(
         score_df,
         groups.reindex(session.expression.index).fillna("rest"),
@@ -572,7 +581,23 @@ def _sample_bins_pca(session, groups: pd.Series, title: str) -> tuple[go.Figure,
         f"PC2 {100 * float(pca.explained_variance_ratio_[1]):.1f}%): "
         + ", ".join(bits)
     )
-    return fig, msg
+    return fig, msg, score_df
+
+
+def _bins_frame_from_cache(cache: dict | None) -> pd.DataFrame | None:
+    if not cache or "scores" not in cache:
+        return None
+    df = pd.DataFrame(cache["scores"])
+    if "_sample_id" in df.columns:
+        df = df.set_index("_sample_id")
+    df.index = df.index.astype(str)
+    return df
+
+
+def _bins_groups_from_cache(cache: dict | None) -> pd.Series | None:
+    if not cache or "groups" not in cache or "sample_ids" not in cache:
+        return None
+    return pd.Series(cache["groups"], index=pd.Index(cache["sample_ids"], dtype=object))
 
 
 class VolcanoConditionModule:
@@ -600,7 +625,6 @@ class VolcanoConditionModule:
                     "'column' <= value for numerical data",
                     className="text-muted small",
                 ),
-                html.Div(id="vc-cols-hint", className="small mb-2"),
                 dbc.Row(
                     [
                         dbc.Col(
@@ -679,8 +703,7 @@ class VolcanoConditionModule:
                                 html.Label("Bin B"),
                                 dcc.Textarea(
                                     id="vc-b-expr",
-                                    placeholder="~   or another filter, same syntax as Bin A",
-                                    value="~",
+                                    placeholder="leave empty = complement of Bin A, or same syntax as Bin A",
                                     style={
                                         "width": "100%",
                                         "height": "72px",
@@ -706,13 +729,14 @@ class VolcanoConditionModule:
                     default_height=EXPORT_H,
                 ),
                 dcc.Loading(
-                    dcc.Graph(
-                        id="vc-bins-pca-fig",
-                        figure={},
-                        config=_BINS_PCA_CONFIG,
+                    plot_with_sample_detail(
+                        "vc-bins-pca-fig",
+                        "vc-bins-sample-detail",
+                        graph_config=_BINS_PCA_CONFIG,
                     ),
                     type="default",
                 ),
+                dcc.Store(id="vc-bins-cache"),
             ]
         )
 
@@ -855,7 +879,6 @@ class VolcanoConditionModule:
     def register_callbacks(self, app: Dash, *, readonly: bool = False) -> None:
         # Celov callbacks registered only when writable
         @app.callback(
-            Output("vc-cols-hint", "children"),
             Output("vc-help-col", "options"),
             Output("vc-help-col", "value"),
             Input("session-store", "data"),
@@ -864,22 +887,11 @@ class VolcanoConditionModule:
         def _fill_cols(session_blob, current_col):
             session = session_from_store(session_blob)
             if session.metadata is None or session.metadata.empty:
-                return (
-                    html.Span("Load a dataset to see metadata columns.", className="text-muted"),
-                    [],
-                    None,
-                )
+                return [], None
             cols = [str(c) for c in session.metadata.columns]
-            chips = [
-                html.Code(_expr_col_name(c), className="me-2", style={"whiteSpace": "nowrap"})
-                for c in cols
-            ]
-            hint = html.Div(
-                [html.Span("Columns: ", className="text-muted me-1"), *chips]
-            )
             opts = [{"label": c, "value": c} for c in cols]
             value = current_col if current_col in cols else None
-            return hint, opts, value
+            return opts, value
 
         @app.callback(
             Output("vc-help-entries", "options"),
@@ -925,19 +937,42 @@ class VolcanoConditionModule:
         @app.callback(
             Output("vc-bins-pca-fig", "figure"),
             Output("vc-bins-pca-status", "children"),
+            Output("vc-bins-cache", "data"),
             Input("vc-bins-pca-run", "n_clicks"),
             Input("vc-bins-pca-fig-w", "value"),
             Input("vc-bins-pca-fig-h", "value"),
             State("session-store", "data"),
             State("vc-a-expr", "value"),
             State("vc-b-expr", "value"),
+            State("vc-bins-cache", "data"),
             prevent_initial_call=True,
         )
-        def _bins_pca(n_clicks, fig_w, fig_h, session_blob, expr_a, expr_b):
-            empty = go.Figure()
-
+        def _bins_pca(n_clicks, fig_w, fig_h, session_blob, expr_a, expr_b, bins_cache):
             def _fail(msg: str):
-                return _error_fig(msg), _err_status(msg)
+                return _error_fig(msg), _err_status(msg), no_update
+
+            triggered = callback_context.triggered_id
+            if triggered in ("vc-bins-pca-fig-w", "vc-bins-pca-fig-h"):
+                score_df = _VC_RUNTIME.get("bins_score_df")
+                if not isinstance(score_df, pd.DataFrame):
+                    score_df = _bins_frame_from_cache(bins_cache)
+                groups = _VC_RUNTIME.get("groups")
+                if not isinstance(groups, pd.Series):
+                    groups = _bins_groups_from_cache(bins_cache)
+                title = (
+                    _VC_RUNTIME.get("groups_title")
+                    or (bins_cache or {}).get("title")
+                    or ""
+                )
+                if score_df is None or groups is None:
+                    return no_update, no_update, no_update
+                fig = _group_pca_fig(
+                    score_df,
+                    groups.reindex(score_df.index).fillna("rest"),
+                    title=_plotly_title("Sample PCA by filter bins", title),
+                    uirevision="vc-bins-pca",
+                )
+                return set_fig_size(fig, fig_w, fig_h), no_update, no_update
 
             session = session_from_store(session_blob)
             if not session.ready or session.metadata is None:
@@ -951,10 +986,17 @@ class VolcanoConditionModule:
             _VC_RUNTIME["groups"] = groups
             _VC_RUNTIME["groups_title"] = title
             try:
-                fig, msg = _sample_bins_pca(session, groups, title)
+                fig, msg, score_df = _sample_bins_pca(session, groups, title)
             except Exception as exc:  # noqa: BLE001
                 return _fail(f"PCA error: {exc}")
-            return set_fig_size(fig, fig_w, fig_h), _ok_status(msg)
+            _VC_RUNTIME["bins_score_df"] = score_df
+            cache = {
+                "scores": score_df.reset_index(names="_sample_id").to_dict(orient="list"),
+                "sample_ids": list(groups.index.astype(str)),
+                "groups": list(groups.astype(str)),
+                "title": title,
+            }
+            return set_fig_size(fig, fig_w, fig_h), _ok_status(msg), cache
 
         @app.callback(
             Output("vc-fig", "figure"),
@@ -1046,7 +1088,7 @@ class VolcanoConditionModule:
                 "fc": float(fc_thr or 0.5),
                 "title": title,
             }
-            fig = volcano_fig_from_results(
+            fig, _n_mark = volcano_fig_from_results(
                 results,
                 title=_plotly_title(title, f"Bin A n={len(keep_a)} vs Bin B n={len(keep_b)}"),
                 neg_log10_padj_threshold=float(padj_thr or 2.0),
@@ -1085,7 +1127,7 @@ class VolcanoConditionModule:
             lookup = _VC_RUNTIME.get("locus_lookup")
             mark_genes = genes_with_meta_entry(lookup, mark_col, mark_entry)
             mark_label = f"{mark_col}={mark_entry}" if mark_col and mark_entry else None
-            fig = volcano_fig_from_results(
+            fig, n_mark = volcano_fig_from_results(
                 results,
                 title=_plotly_title(meta.get("title", "Volcano")),
                 neg_log10_padj_threshold=meta["padj"],
@@ -1094,7 +1136,6 @@ class VolcanoConditionModule:
                 mark_label=mark_label,
                 hover_map=gene_meta_hover_map(lookup, list(gene_meta_cols or [])),
             )
-            n_mark = len(mark_genes) if mark_genes else 0
             return set_fig_size(fig, fig_w, fig_h), mark_legend_banner(n_mark, mark_entry)
 
         @app.callback(
@@ -1124,11 +1165,33 @@ class VolcanoConditionModule:
         @app.callback(
             Output("vc-gene-detail", "children"),
             Input("vc-last-gene", "data"),
+            State("session-store", "data"),
+            State("project-store", "data"),
         )
-        def _detail(gid):
+        def _detail(gid, session_blob, project_blob):
             if not gid:
                 return gene_detail_placeholder()
-            return gene_detail_table(str(gid), _VC_RUNTIME.get("locus_lookup"))
+            lookup = _VC_RUNTIME.get("locus_lookup")
+            if lookup is None:
+                path = _locus_path_from_session(session_blob, project_blob)
+                if path:
+                    try:
+                        lookup = load_locus_lookup(path)
+                    except Exception:  # noqa: BLE001
+                        lookup = None
+            return gene_detail_table(str(gid), lookup)
+
+        register_sample_detail_callback(
+            app,
+            graph_id="vc-bins-pca-fig",
+            detail_id="vc-bins-sample-detail",
+            cache_id="vc-bins-cache",
+            get_score_df=lambda cache: (
+                _VC_RUNTIME.get("bins_score_df")
+                if isinstance(_VC_RUNTIME.get("bins_score_df"), pd.DataFrame)
+                else _bins_frame_from_cache(cache)
+            ),
+        )
 
         if readonly:
             return

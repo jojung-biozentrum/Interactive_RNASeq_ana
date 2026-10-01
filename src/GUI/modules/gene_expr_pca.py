@@ -1,9 +1,8 @@
-"""Gene → PCA: color PCA by expression of selected genes (Virtual-server)."""
+"""Gene expression profiles: color PCA by expression of selected genes."""
 
 from __future__ import annotations
 
 import math
-import re
 
 from dash import Dash, Input, Output, State, dcc, html, no_update
 import dash_bootstrap_components as dbc
@@ -11,7 +10,6 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from sklearn.decomposition import PCA
 
 from src.biocyc.celov_multiomics_post import load_locus_lookup
 
@@ -28,21 +26,19 @@ from ..components.controls import (
 )
 from ..data_store import session_from_store
 from .clustering import _locus_path_from_session
-from .pca import _PCA_RUNTIME, _run_pca
+from .pca import _PCA_RUNTIME, _run_pca, _score_frame_for_plot
 
 # Hardcoded locus / ID fields (no free column picker).
+# From locus_lookup_biocyc_ids_handcurated.csv: geneName + strain synonym cols.
 _NAME_FIELDS = (
     "geneID",
     "geneName",
-    "geneNameA",
-    "geneName A",
-    "geneNameC",
-    "gene Name C",
-    "geneName C",
+    "Gene name A1552",
+    "Gene name C6706",
 )
 
 _GRAPH_CONFIG = {
-    "toImageButtonOptions": {"format": "svg", "filename": "gene_expr_pca"},
+    "toImageButtonOptions": {"format": "svg", "filename": "gene_expression_profiles"},
     "displaylogo": False,
 }
 _EXPR_COLS = 2
@@ -51,13 +47,6 @@ _EXPR_COLS = 2
 def _plotly_title(*lines: str) -> dict:
     text = "<br>".join(x for x in lines if x is not None and str(x).strip() != "")
     return {"text": text, "x": 0.5, "xanchor": "center"}
-
-
-def _parse_paste(text: str | None) -> list[str]:
-    if not text:
-        return []
-    parts = re.split(r"[\s,;]+", str(text).strip())
-    return [p for p in parts if p]
 
 
 def _available_name_fields(lookup: pd.DataFrame | None) -> list[str]:
@@ -73,37 +62,38 @@ def _available_name_fields(lookup: pd.DataFrame | None) -> list[str]:
     return out
 
 
-def _resolve_gene_ids(
-    tokens: list[str],
+def _lookup_id_col(lookup: pd.DataFrame) -> str | None:
+    if "geneID" in lookup.columns:
+        return "geneID"
+    if "locusTag" in lookup.columns:
+        return "locusTag"
+    return None
+
+
+def _titles_for_genes(
+    genes: list[str],
     field: str,
-    expr_genes: list[str],
     lookup: pd.DataFrame | None,
-) -> tuple[list[str], list[str]]:
-    """Map paste/search tokens → expression geneIDs; return (ids, titles)."""
-    have = set(map(str, expr_genes))
-    ids: list[str] = []
-    titles: list[str] = []
-    if field == "geneID" or lookup is None or lookup.empty or field not in lookup.columns:
-        for t in tokens:
-            if t in have and t not in ids:
-                ids.append(t)
-                titles.append(t)
-        return ids, titles
-    # map field value → geneID via locusTag / geneID columns
-    id_col = "geneID" if "geneID" in lookup.columns else (
-        "locusTag" if "locusTag" in lookup.columns else None
-    )
+) -> list[str]:
+    """Panel titles; pick values are always expression geneIDs."""
+    if (
+        field == "geneID"
+        or lookup is None
+        or lookup.empty
+        or field not in lookup.columns
+    ):
+        return list(genes)
+    id_col = _lookup_id_col(lookup)
     if id_col is None:
-        return [], []
-    series = lookup[field].fillna("").astype(str)
+        return list(genes)
     id_series = lookup[id_col].astype(str)
-    for t in tokens:
-        hits = id_series[series.str.lower() == t.lower()]
-        for gid in hits.astype(str):
-            if gid in have and gid not in ids:
-                ids.append(gid)
-                titles.append(f"{t} ({gid})" if t != gid else gid)
-    return ids, titles
+    name_series = lookup[field].fillna("").astype(str)
+    titles: list[str] = []
+    for gid in genes:
+        hits = name_series[id_series == gid]
+        label = str(hits.iloc[0]) if len(hits) else ""
+        titles.append(f"{label} ({gid})" if label and label != gid else gid)
+    return titles
 
 
 def _resolve_shape_size(shape, size, columns):
@@ -132,7 +122,7 @@ def _expr_pca_figure(
     genes = [str(g) for g in genes if str(g) in expr.columns]
     empty = go.Figure()
     if not genes:
-        empty.add_annotation(text="Select or paste genes present in the matrix.", showarrow=False)
+        empty.add_annotation(text="Select genes present in the matrix.", showarrow=False)
         return empty
     n = len(genes)
     n_cols = min(_EXPR_COLS, n)
@@ -145,9 +135,9 @@ def _expr_pca_figure(
         horizontal_spacing=0.10,
         vertical_spacing=0.12,
     )
-    x = pd.to_numeric(score_df[x_col], errors="coerce")
-    y = pd.to_numeric(score_df[y_col], errors="coerce")
-    hover = score_df.index.astype(str)
+    x = pd.to_numeric(score_df[x_col], errors="coerce").to_numpy(dtype=float)
+    y = pd.to_numeric(score_df[y_col], errors="coerce").to_numpy(dtype=float)
+    hover = score_df.index.astype(str).to_numpy()
     shape_col, shape_const, size_col, size_const = _resolve_shape_size(
         shape, size, score_df.columns
     )
@@ -163,24 +153,28 @@ def _expr_pca_figure(
         row, col = i // n_cols + 1, i % n_cols + 1
         title = titles[i] if i < len(titles) else gene
         vals = pd.to_numeric(expr[gene].reindex(score_df.index), errors="coerce")
-        cmin = float(np.nanmin(vals.to_numpy(dtype=float))) if vals.notna().any() else 0.0
-        cmax = float(np.nanmax(vals.to_numpy(dtype=float))) if vals.notna().any() else 1.0
+        color = vals.to_numpy(dtype=float)
+        finite = color[np.isfinite(color)]
+        cmin = float(np.nanmin(finite)) if finite.size else 0.0
+        cmax = float(np.nanmax(finite)) if finite.size else 1.0
+        if cmin == cmax:
+            cmax = cmin + 1.0
         fig.add_trace(
             go.Scatter(
                 x=x,
                 y=y,
                 mode="markers",
                 marker=dict(
-                    color=vals,
+                    color=color,
                     colorscale="Viridis",
-                    showscale=True,
-                    colorbar=dict(thickness=12, outlinewidth=0),
+                    showscale=(i == 0),
+                    colorbar=dict(thickness=12, outlinewidth=0) if i == 0 else None,
                     cmin=cmin,
                     cmax=cmax,
                     symbol=symbols,
                     size=sizes,
                 ),
-                customdata=np.stack([hover, vals.to_numpy(dtype=float)], axis=1),
+                customdata=np.stack([hover, color], axis=1),
                 hovertemplate=(
                     "%{customdata[0]}<br>" + title + ": %{customdata[1]:.4g}<extra></extra>"
                 ),
@@ -202,15 +196,15 @@ def _expr_pca_figure(
 
 class GeneExprPCAModule:
     id = "gene-expr-pca"
-    label = "Gene → PCA"
+    label = "Gene expression profiles"
 
     def layout(self, *, readonly: bool = False):
         return html.Div(
             [
                 html.P(
-                    "Paste gene IDs / names, or search by a hardcoded name field. "
-                    "Color is always gene expression (viridis); shape / size use "
-                    "metadata columns or fixed values (same as PCA).",
+                    "Search / pick genes by a hardcoded name field. "
+                    "Color is always gene expression (viridis); after plotting, "
+                    "shape / size can use metadata columns or fixed values.",
                     className="text-muted small",
                 ),
                 dbc.Row(
@@ -256,6 +250,8 @@ class GeneExprPCAModule:
                     ],
                     className="g-2 mb-2",
                 ),
+                dbc.Button("Plot on PCA", id="gxp-run", color="primary", className="mb-2"),
+                html.Div(id="gxp-status", className="text-muted small mb-2"),
                 dbc.Row(
                     [
                         dbc.Col(
@@ -283,15 +279,6 @@ class GeneExprPCAModule:
                     ],
                     className="g-2 mb-2",
                 ),
-                html.Label("Paste gene IDs or names (whitespace / comma / semicolon)"),
-                dcc.Textarea(
-                    id="gxp-paste",
-                    placeholder="VC_00610 VC_01274 …",
-                    style={"width": "100%", "height": "72px", "fontFamily": "monospace"},
-                    className="mb-2",
-                ),
-                dbc.Button("Plot on PCA", id="gxp-run", color="primary", className="mb-2"),
-                html.Div(id="gxp-status", className="text-muted small mb-2"),
                 fig_size_controls("gxp", default_width=EXPORT_W, default_height=EXPORT_H),
                 dcc.Loading(
                     dcc.Graph(id="gxp-fig", figure={}, config=_GRAPH_CONFIG),
@@ -360,8 +347,8 @@ class GeneExprPCAModule:
                 return opts
             if field not in lookup.columns:
                 return opts
-            id_col = "geneID" if "geneID" in lookup.columns else "locusTag"
-            if id_col not in lookup.columns:
+            id_col = _lookup_id_col(lookup)
+            if id_col is None:
                 return opts
             have = set(session.expression.columns.astype(str))
             for _, row in lookup.iterrows():
@@ -385,8 +372,8 @@ class GeneExprPCAModule:
             Input("pca-cache", "data"),
         )
         def _axes(gxp_cache, pca_cache):
-            n = 0
-            if "score_df" in _PCA_RUNTIME:
+            n = int((pca_cache or {}).get("n_pcs") or 0)
+            if not n and "score_df" in _PCA_RUNTIME:
                 n = sum(
                     1
                     for c in _PCA_RUNTIME["score_df"].columns
@@ -418,13 +405,14 @@ class GeneExprPCAModule:
             Input("gxp-fig-h", "value"),
             Input("gxp-shape", "value"),
             Input("gxp-size", "value"),
+            Input("gxp-x", "value"),
+            Input("gxp-y", "value"),
             State("session-store", "data"),
             State("project-store", "data"),
+            State("pca-cache", "data"),
             State("gxp-name-field", "value"),
             State("gxp-gene-pick", "value"),
-            State("gxp-paste", "value"),
-            State("gxp-x", "value"),
-            State("gxp-y", "value"),
+            State("gxp-cache", "data"),
             prevent_initial_call=True,
         )
         def _run(
@@ -433,28 +421,29 @@ class GeneExprPCAModule:
             fig_h,
             shape,
             size,
-            session_blob,
-            project_blob,
-            field,
-            picked,
-            paste,
             x_col,
             y_col,
+            session_blob,
+            project_blob,
+            pca_cache,
+            field,
+            picked,
+            gxp_cache,
         ):
             empty = go.Figure()
             session = session_from_store(session_blob)
             if not session.ready or session.expression is None:
-                return empty, session.error or "Load a dataset first.", None
-            tokens = list(picked or []) + _parse_paste(paste)
-            # de-dupe preserving order
-            seen = set()
-            uniq = []
-            for t in tokens:
-                if t not in seen:
-                    seen.add(t)
-                    uniq.append(str(t))
-            if not uniq:
-                return empty, "Paste or pick at least one gene.", None
+                return empty, session.error or "Load a dataset first.", no_update
+            have = set(session.expression.columns.astype(str))
+            genes = []
+            for t in picked or []:
+                gid = str(t)
+                if gid in have and gid not in genes:
+                    genes.append(gid)
+            if not genes and gxp_cache and gxp_cache.get("genes"):
+                genes = [g for g in gxp_cache["genes"] if g in have]
+            if not genes:
+                return empty, "Pick at least one gene.", no_update
             lookup = None
             path = _locus_path_from_session(session_blob, project_blob)
             if path:
@@ -462,29 +451,29 @@ class GeneExprPCAModule:
                     lookup = load_locus_lookup(path)
                 except Exception:  # noqa: BLE001
                     lookup = None
-            genes, titles = _resolve_gene_ids(
-                uniq,
-                field or "geneID",
-                list(session.expression.columns.astype(str)),
-                lookup,
-            )
-            if not genes:
-                return empty, "No pasted/picked names matched genes in the expression matrix.", None
-            # Prefer existing PCA runtime; else compute
-            if "score_df" in _PCA_RUNTIME and "var_ratio" in _PCA_RUNTIME:
-                score_df = _PCA_RUNTIME["score_df"]
-                var = _PCA_RUNTIME["var_ratio"]
-            else:
-                score_df, var, _explained, _loadings = _run_pca(session)
-                _PCA_RUNTIME.update(
-                    {
-                        "score_df": score_df,
-                        "var_ratio": list(map(float, var)),
-                        "explained_variance": np.asarray(_explained, dtype=float),
-                        "loadings": _loadings,
-                    }
-                )
-            # Ensure metadata columns are present for shape/size
+            titles = _titles_for_genes(genes, field or "geneID", lookup)
+            score_df = _score_frame_for_plot(pca_cache)
+            var = list((pca_cache or {}).get("var_ratio") or [])
+            if score_df is None or not any(
+                str(c).startswith("PC") and str(c)[2:].isdigit() for c in score_df.columns
+            ):
+                if "score_df" in _PCA_RUNTIME and "var_ratio" in _PCA_RUNTIME:
+                    score_df = _PCA_RUNTIME["score_df"]
+                    var = list(_PCA_RUNTIME["var_ratio"])
+                else:
+                    try:
+                        score_df, var, _explained, _loadings = _run_pca(session)
+                        _PCA_RUNTIME.update(
+                            {
+                                "score_df": score_df,
+                                "var_ratio": list(map(float, var)),
+                                "explained_variance": np.asarray(_explained, dtype=float),
+                                "loadings": _loadings,
+                            }
+                        )
+                        var = list(map(float, var))
+                    except Exception as exc:  # noqa: BLE001
+                        return empty, f"PCA error: {exc}", no_update
             if session.metadata is not None:
                 missing = [c for c in session.metadata.columns if c not in score_df.columns]
                 if missing:
@@ -493,18 +482,21 @@ class GeneExprPCAModule:
             y_col = y_col if y_col in score_df.columns else (
                 "PC2" if "PC2" in score_df.columns else "PC1"
             )
-            fig = _expr_pca_figure(
-                score_df,
-                session.expression,
-                genes,
-                titles,
-                x_col,
-                y_col,
-                var,
-                shape=shape,
-                size=size,
-            )
-            fig = set_fig_size(fig, fig_w, fig_h)
+            try:
+                fig = _expr_pca_figure(
+                    score_df,
+                    session.expression,
+                    genes,
+                    titles,
+                    x_col,
+                    y_col,
+                    var,
+                    shape=shape,
+                    size=size,
+                )
+                fig = set_fig_size(fig, fig_w, fig_h)
+            except Exception as exc:  # noqa: BLE001
+                return empty, f"Plot error: {exc}", no_update
             n_pcs = sum(
                 1
                 for c in score_df.columns

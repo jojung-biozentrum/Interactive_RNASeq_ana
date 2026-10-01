@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from .base import AnalysisModule
 from .clustering import ClusteringModule
-from .condition_prediction import ConditionPredictionModule
 from .filter_matrix import FilterModule
 from .gene_expr_pca import GeneExprPCAModule
 from .gene_gradients import GeneGradientsModule
@@ -24,10 +23,9 @@ MODULE_REGISTRY: list[AnalysisModule] = [
     ClusteringModule(),
     VolcanoConditionModule(),
     GeneGradientsModule(),
+    ParallelConditionsModule(),
     GeneExprPCAModule(),
     FilterModule(),
-    ConditionPredictionModule(),
-    ParallelConditionsModule(),
 ]
 
 
@@ -39,14 +37,9 @@ def build_registry(*, readonly: bool = False) -> list[AnalysisModule]:
         ClusteringModule(),
         VolcanoConditionModule(),
         GeneGradientsModule(),
+        ParallelConditionsModule(),
         GeneExprPCAModule(),
     ]
     if not readonly:
         mods.append(FilterModule())
-    mods.extend(
-        [
-            ConditionPredictionModule(),
-            ParallelConditionsModule(),
-        ]
-    )
     return mods
