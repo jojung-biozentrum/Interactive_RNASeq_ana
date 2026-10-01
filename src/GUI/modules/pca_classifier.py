@@ -2,18 +2,12 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from sklearn.linear_model import LogisticRegression # expectation: roughly linearly seperable and no extreme outliers
 from sklearn.model_selection import StratifiedKFold, cross_val_score
 
-from src.biocyc.celov_multiomics_post import (
-    annotate_gene_table,
-    celov_multiomics_file_generation,
-)
 from src.GUI.components.controls import apply_export_layout
 from src.GUI.components.gene_scores import weighed_genes_from_classifier
 
@@ -199,76 +193,6 @@ def add_decision_boundary(fig: go.Figure, df: pd.DataFrame, w, b, name: str = "2
         )
     )
     return fig
-
-
-def save_classifier_celov(
-    weighed: pd.DataFrame,
-    out_path: str | Path,
-    mode: str,
-    locus_lookup: pd.DataFrame | None = None,
-    id_column: str = "biocyc_id",
-) -> list[Path]:
-    """Write Celov ``.txt`` only (no CSV).
-
-    ``out_path`` should contain ``{}`` for the type token, e.g.
-    ``PCA_LinearClass_{}.txt`` → ``…_up.txt``, ``…_down.txt``, ``…_up_and_down.txt``.
-
-    ``id_column`` is the locus-lookup column used as Celov gene IDs (dataset
-    ``celov_id_col``; e.g. biocyc_id, old locus tags, RefSeq IDs, gene names).
-
-    ``mode``: ``up_and_down`` (both signs in one file), ``up``, ``down``, or ``all``
-    (write the three type files).
-    """
-    df = weighed.copy()
-    id_column = (id_column or "biocyc_id").strip() or "biocyc_id"
-    if locus_lookup is not None:
-        if id_column not in df.columns:
-            df = annotate_gene_table(df, locus_lookup)
-        if id_column not in df.columns:
-            raise ValueError(
-                f"Celov ID column {id_column!r} not in locus lookup "
-                f"(columns: {list(locus_lookup.columns)})."
-            )
-    elif id_column not in df.columns:
-        id_column = "geneID"
-        if "geneID" not in df.columns:
-            raise ValueError("weighed genes table missing geneID")
-
-    subsets = {
-        "up_and_down": df,
-        "up": df[df["gene_weight"] > 0],
-        "down": df[df["gene_weight"] < 0],
-    }
-    mode = (mode or "up_and_down").lower().replace(" ", "_")
-    if mode in ("combined", "both"):
-        mode = "up_and_down"
-    if mode == "all":
-        types = ["up_and_down", "up", "down"]
-    elif mode in subsets:
-        types = [mode]
-    else:
-        raise ValueError(f"Unknown Celov mode {mode!r}; use up_and_down, up, down, or all.")
-
-    template = str(out_path)
-    if "{}" not in template:
-        # insert before extension
-        p = Path(template)
-        template = str(p.with_name(f"{p.stem}_{{}}{p.suffix or '.txt'}"))
-
-    written: list[Path] = []
-    for kind in types:
-        subset = subsets[kind]
-        path = Path(template.format(kind))
-        path.parent.mkdir(parents=True, exist_ok=True)
-        celov_multiomics_file_generation(
-            subset,
-            path,
-            "gene_weight",
-            id_column=id_column,
-            dataset_label=f"linear_classifier_{kind}",
-        )
-        written.append(path)
-    return written
 
 
 def build_weighed_genes(

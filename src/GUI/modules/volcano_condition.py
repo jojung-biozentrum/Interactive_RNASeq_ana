@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import ast
 import re
 
@@ -16,17 +14,14 @@ import plotly.graph_objects as go
 from sklearn.decomposition import PCA
 
 from src.biocyc.celov_multiomics_post import load_locus_lookup
-from src.GUI.project import resolve_celov_id_col
-
 from ..components.controls import (
     EXPORT_H,
     EXPORT_W,
     apply_export_layout,
     equal_xy_axes,
-    fig_size_controls,
-    set_fig_size,
+    for_viewer,
+    graph_export_config,
 )
-from ..components.folder_browser import pick_save_file_dialog
 from ..components.gene_meta_mark import (
     entry_dropdown_options,
     gene_meta_hover_map,
@@ -43,26 +38,14 @@ from ..components.sample_detail import (
 )
 from ..data_store import session_from_store
 from .clustering import (
-    _active_dataset_entry,
     _locus_path_from_session,
-    _volcano_weighed_for_celov,
     volcano_cluster_vs_cluster,
 )
 from .hc_plots import volcano_fig_from_results
-from .pca_classifier import save_classifier_celov
 
-_GRAPH_CONFIG = {
-    "toImageButtonOptions": {"format": "svg", "filename": "volcano_condition"},
-    "displaylogo": False,
-}
-_BINS_PCA_CONFIG = {
-    "toImageButtonOptions": {"format": "svg", "filename": "volcano_condition_bins_pca"},
-    "displaylogo": False,
-}
-_GENE_PCA_CONFIG = {
-    "toImageButtonOptions": {"format": "svg", "filename": "volcano_condition_gene_pca"},
-    "displaylogo": False,
-}
+_GRAPH_CONFIG = graph_export_config("volcano_condition")
+_BINS_PCA_CONFIG = graph_export_config("volcano_condition_bins_pca")
+_GENE_PCA_CONFIG = graph_export_config("volcano_condition_gene_pca")
 _VC_RUNTIME: dict = {}
 
 
@@ -604,9 +587,8 @@ class VolcanoConditionModule:
     id = "volcano-condition"
     label = "Volcano by condition"
 
-    def layout(self, *, readonly: bool = False):
-        write_style = {"display": "none"} if readonly else None
-        body = html.Div([self._samples(), self._genes(write_style)])
+    def layout(self):
+        body = html.Div([self._samples(), self._genes()])
         return body
 
     def _samples(self):
@@ -723,16 +705,12 @@ class VolcanoConditionModule:
                     className="mb-2",
                 ),
                 html.Div(id="vc-bins-pca-status", className="mb-2"),
-                fig_size_controls(
-                    "vc-bins-pca",
-                    default_width=EXPORT_W,
-                    default_height=EXPORT_H,
-                ),
                 dcc.Loading(
                     plot_with_sample_detail(
                         "vc-bins-pca-fig",
                         "vc-bins-sample-detail",
                         graph_config=_BINS_PCA_CONFIG,
+                        graph_style={"width": "100%", "height": f"{EXPORT_H}px"},
                     ),
                     type="default",
                 ),
@@ -740,7 +718,7 @@ class VolcanoConditionModule:
             ]
         )
 
-    def _genes(self, write_style):
+    def _genes(self):
         return html.Div(
             [
                 html.P(
@@ -791,12 +769,17 @@ class VolcanoConditionModule:
                 html.Div(id="vc-status", className="mb-2"),
                 mark_controls(col_id="vc-mark-col", entry_id="vc-mark-entry", wrap_id="vc-mark-wrap"),
                 html.Div(id="vc-mark-legend", children=mark_legend_banner(0, None)),
-                fig_size_controls("vc", default_width=EXPORT_W, default_height=EXPORT_H),
                 dcc.Loading(
                     dbc.Row(
                         [
                             dbc.Col(
-                                dcc.Graph(id="vc-fig", figure={}, config=_GRAPH_CONFIG),
+                                dcc.Graph(
+                                    id="vc-fig",
+                                    figure={},
+                                    config=_GRAPH_CONFIG,
+                                    responsive=True,
+                                    style={"width": "100%", "height": f"{EXPORT_H}px"},
+                                ),
                                 md=8,
                             ),
                             dbc.Col(
@@ -819,65 +802,10 @@ class VolcanoConditionModule:
                 ),
                 dcc.Store(id="vc-last-gene"),
                 dcc.Store(id="vc-cache"),
-                html.Div(
-                    [
-                html.H6("Save Celov", className="mt-3"),
-                dbc.Row(
-                    [
-                        dbc.Col(
-                            dcc.Dropdown(
-                                id="vc-celov-score",
-                                options=[
-                                    {"label": "expression difference", "value": "fold_change"},
-                                    {"label": "−log10(padj)", "value": "neg_log10_padj"},
-                                    {"label": "product of both", "value": "product"},
-                                ],
-                                value="fold_change",
-                                clearable=False,
-                            ),
-                            md=3,
-                        ),
-                        dbc.Col(
-                            dcc.RadioItems(
-                                id="vc-celov-mode",
-                                options=[
-                                    {"label": "up & down", "value": "up_and_down"},
-                                    {"label": "up", "value": "up"},
-                                    {"label": "down", "value": "down"},
-                                    {"label": "all together", "value": "all"},
-                                ],
-                                value="up_and_down",
-                                inline=True,
-                            ),
-                            md=4,
-                        ),
-                        dbc.Col(
-                            dbc.InputGroup(
-                                [
-                                    dbc.Input(id="vc-celov-out", type="text"),
-                                    dbc.Button(
-                                        "Browse…",
-                                        id="vc-celov-browse",
-                                        color="info",
-                                        outline=True,
-                                    ),
-                                ]
-                            ),
-                            md=4,
-                        ),
-                    ],
-                    className="g-2 mb-2",
-                ),
-                dbc.Button("Save Celov", id="vc-celov-save", color="secondary", className="mb-2"),
-                html.Div(id="vc-celov-status", className="text-muted small"),
-                    ],
-                    style=write_style,
-                ),
             ]
         )
 
-    def register_callbacks(self, app: Dash, *, readonly: bool = False) -> None:
-        # Celov callbacks registered only when writable
+    def register_callbacks(self, app: Dash) -> None:
         @app.callback(
             Output("vc-help-col", "options"),
             Output("vc-help-col", "value"),
@@ -939,40 +867,14 @@ class VolcanoConditionModule:
             Output("vc-bins-pca-status", "children"),
             Output("vc-bins-cache", "data"),
             Input("vc-bins-pca-run", "n_clicks"),
-            Input("vc-bins-pca-fig-w", "value"),
-            Input("vc-bins-pca-fig-h", "value"),
             State("session-store", "data"),
             State("vc-a-expr", "value"),
             State("vc-b-expr", "value"),
-            State("vc-bins-cache", "data"),
             prevent_initial_call=True,
         )
-        def _bins_pca(n_clicks, fig_w, fig_h, session_blob, expr_a, expr_b, bins_cache):
+        def _bins_pca(n_clicks, session_blob, expr_a, expr_b):
             def _fail(msg: str):
                 return _error_fig(msg), _err_status(msg), no_update
-
-            triggered = callback_context.triggered_id
-            if triggered in ("vc-bins-pca-fig-w", "vc-bins-pca-fig-h"):
-                score_df = _VC_RUNTIME.get("bins_score_df")
-                if not isinstance(score_df, pd.DataFrame):
-                    score_df = _bins_frame_from_cache(bins_cache)
-                groups = _VC_RUNTIME.get("groups")
-                if not isinstance(groups, pd.Series):
-                    groups = _bins_groups_from_cache(bins_cache)
-                title = (
-                    _VC_RUNTIME.get("groups_title")
-                    or (bins_cache or {}).get("title")
-                    or ""
-                )
-                if score_df is None or groups is None:
-                    return no_update, no_update, no_update
-                fig = _group_pca_fig(
-                    score_df,
-                    groups.reindex(score_df.index).fillna("rest"),
-                    title=_plotly_title("Sample PCA by filter bins", title),
-                    uirevision="vc-bins-pca",
-                )
-                return set_fig_size(fig, fig_w, fig_h), no_update, no_update
 
             session = session_from_store(session_blob)
             if not session.ready or session.metadata is None:
@@ -996,7 +898,7 @@ class VolcanoConditionModule:
                 "groups": list(groups.astype(str)),
                 "title": title,
             }
-            return set_fig_size(fig, fig_w, fig_h), _ok_status(msg), cache
+            return for_viewer(fig), _ok_status(msg), cache
 
         @app.callback(
             Output("vc-fig", "figure"),
@@ -1007,8 +909,6 @@ class VolcanoConditionModule:
             Output("vc-mark-col", "value"),
             Output("vc-last-gene", "data", allow_duplicate=True),
             Input("vc-run", "n_clicks"),
-            State("vc-fig-w", "value"),
-            State("vc-fig-h", "value"),
             State("session-store", "data"),
             State("project-store", "data"),
             State("vc-a-expr", "value"),
@@ -1020,8 +920,6 @@ class VolcanoConditionModule:
         )
         def _run(
             n_clicks,
-            fig_w,
-            fig_h,
             session_blob,
             project_blob,
             expr_a,
@@ -1093,7 +991,7 @@ class VolcanoConditionModule:
                 fold_change_threshold=float(fc_thr or 0.5),
                 hover_map=gene_meta_hover_map(lookup),
             )
-            fig = set_fig_size(fig, fig_w, fig_h)
+            fig = for_viewer(fig)
             mark_cols = locus_mark_columns(lookup)
             mark_opts = [{"label": c, "value": c} for c in mark_cols]
             wrap = {"display": "block"} if mark_cols else hide
@@ -1112,11 +1010,9 @@ class VolcanoConditionModule:
             Output("vc-mark-legend", "children"),
             Input("vc-mark-col", "value"),
             Input("vc-mark-entry", "value"),
-            Input("vc-fig-w", "value"),
-            Input("vc-fig-h", "value"),
             prevent_initial_call=True,
         )
-        def _replot_marks(mark_col, mark_entry, fig_w, fig_h):
+        def _replot_marks(mark_col, mark_entry):
             results = _VC_RUNTIME.get("results")
             meta = _VC_RUNTIME.get("plot_meta")
             if results is None or not meta:
@@ -1133,7 +1029,7 @@ class VolcanoConditionModule:
                 mark_label=mark_label,
                 hover_map=gene_meta_hover_map(lookup),
             )
-            return set_fig_size(fig, fig_w, fig_h), mark_legend_banner(n_mark, mark_entry)
+            return for_viewer(fig), mark_legend_banner(n_mark, mark_entry)
 
         @app.callback(
             Output("vc-mark-entry", "options"),
@@ -1190,55 +1086,3 @@ class VolcanoConditionModule:
             ),
         )
 
-        if readonly:
-            return
-
-        @app.callback(
-            Output("vc-celov-out", "value"),
-            Output("vc-celov-status", "children", allow_duplicate=True),
-            Input("vc-celov-browse", "n_clicks"),
-            State("vc-celov-out", "value"),
-            State("project-store", "data"),
-            prevent_initial_call=True,
-        )
-        def _browse(n_clicks, current, project_blob):
-            initial = (project_blob or {}).get("root") or current
-            chosen = pick_save_file_dialog(
-                initial=initial,
-                title="Save condition volcano Celov (use {} for type)",
-                defaultextension=".txt",
-                initialfile="Condition_Volcano_{}.txt",
-            )
-            if not chosen:
-                return no_update, "Celov path browse cancelled."
-            return chosen, f"Celov output template: {chosen}"
-
-        @app.callback(
-            Output("vc-celov-status", "children"),
-            Input("vc-celov-save", "n_clicks"),
-            State("vc-celov-out", "value"),
-            State("vc-celov-mode", "value"),
-            State("vc-celov-score", "value"),
-            State("session-store", "data"),
-            State("project-store", "data"),
-            prevent_initial_call=True,
-        )
-        def _save(n_clicks, out_path, mode, score, session_blob, project_blob):
-            results = _VC_RUNTIME.get("results")
-            if results is None:
-                return "Run the volcano first."
-            if not out_path:
-                return "Choose an output path."
-            try:
-                weighed = _volcano_weighed_for_celov(results, score or "fold_change")
-                entry = _active_dataset_entry(session_blob, project_blob)
-                paths = save_classifier_celov(
-                    weighed,
-                    out_path,
-                    mode=mode or "up_and_down",
-                    locus_lookup=_VC_RUNTIME.get("locus_lookup"),
-                    id_column=resolve_celov_id_col(entry),
-                )
-                return "Saved Celov: " + ", ".join(str(p) for p in paths)
-            except Exception as exc:  # noqa: BLE001
-                return f"Celov save error: {exc}"

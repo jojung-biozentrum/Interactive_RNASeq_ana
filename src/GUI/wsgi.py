@@ -1,9 +1,8 @@
 """Gunicorn WSGI entry for the virtual-server dashboard.
 
-    gunicorn src.GUI.wsgi:server -b :8052
+    gunicorn src.GUI.wsgi:server -b 127.0.0.1:8052
 
-This module **forces** read-only mode (overrides a mistaken DASH_READONLY=0).
-Writable UI is never available through this entry point.
+Always read-only; data root defaults to the lab folder (override with env).
 
 Environment:
 
@@ -23,19 +22,14 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from src.GUI.app import create_app
-from src.GUI.runtime import SERVER_DEFAULT_DATA_ROOT, normalize_url_base_pathname
-
-# Force readonly — do not use setdefault (that would keep a bad DASH_READONLY=0).
-os.environ["DASH_READONLY"] = "1"
-os.environ.pop("DASH_WRITABLE", None)
+from src.GUI.runtime import DATA_ROOT, normalize_url_base_pathname
 
 app = create_app(
     default_project=(
         os.environ.get("DASH_DEFAULT_PROJECT")
         or os.environ.get("DASH_DATA_ROOT")
-        or SERVER_DEFAULT_DATA_ROOT
+        or DATA_ROOT
     ),
-    readonly=True,
     url_base_pathname=normalize_url_base_pathname(
         os.environ.get("DASH_URL_BASE_PATHNAME", "/interactive/")
     ),

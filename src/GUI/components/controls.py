@@ -204,6 +204,36 @@ def set_fig_size(
     return fig
 
 
+def for_viewer(fig: go.Figure) -> go.Figure:
+    """Drop fixed pixel size so ``dcc.Graph(responsive=True)`` fills the container.
+
+    SVG download size stays on ``toImageButtonOptions`` (see ``graph_export_config``).
+    """
+    fig.update_layout(autosize=True, width=None, height=None)
+    return fig
+
+
+def graph_export_config(
+    filename: str,
+    *,
+    width: int = EXPORT_W,
+    height: int = EXPORT_H,
+    **extra,
+) -> dict:
+    """Plotly modebar config: keep Inkscape export size; display is responsive."""
+    cfg = {
+        "toImageButtonOptions": {
+            "format": "svg",
+            "filename": filename,
+            "width": int(width),
+            "height": int(height),
+        },
+        "displaylogo": False,
+        **extra,
+    }
+    return cfg
+
+
 def fig_size_controls(
     prefix: str,
     *,
@@ -211,7 +241,7 @@ def fig_size_controls(
     default_height: int = EXPORT_H,
     heading: str | None = "Figure size (px)",
 ) -> html.Div:
-    """Width/height number inputs; ids are ``{prefix}-fig-w`` / ``{prefix}-fig-h``."""
+    """Deprecated figure-size inputs (viewer uses responsive graphs)."""
     kids: list = []
     if heading:
         kids.append(html.Span(heading, className="small text-muted me-2"))

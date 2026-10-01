@@ -1,4 +1,4 @@
-"""Working-folder project helpers: open/create, project.yaml, figure/export paths."""
+"""Project helpers: load project.yaml and resolve dataset paths under the root."""
 
 from __future__ import annotations
 
@@ -40,17 +40,6 @@ class DatasetEntry:
         )
 
 
-def resolve_celov_id_col(entry: DatasetEntry | dict[str, Any] | None) -> str:
-    """Celov gene-ID column from a dataset entry (default ``biocyc_id``)."""
-    if entry is None:
-        return "biocyc_id"
-    if isinstance(entry, DatasetEntry):
-        col = entry.celov_id_col
-    else:
-        col = entry.get("celov_id_col")
-    return (str(col).strip() if col else "") or "biocyc_id"
-
-
 @dataclass
 class Project:
     root: Path
@@ -61,35 +50,29 @@ class Project:
     def yaml_path(self) -> Path:
         return self.root / "project.yaml"
 
-    def figures_dir(self) -> Path:
-        """Recommended figures folder (``figs/``); not created until a figure is saved."""
-        return self.root / "figs"
-
-    def exports_dir(self) -> Path:
-        """Recommended Celov / export folder; not created until a file is saved."""
-        return self.root / "celov_output"
-
     def resolve(self, relative: str) -> Path:
-        p = Path(relative)
+        """Resolve a dataset path; must stay under ``self.root`` (no absolute escapes)."""
+        raw = str(relative or "").strip()
+        if not raw:
+            raise ValueError("Empty path")
+        p = Path(raw)
         if p.is_absolute():
-            return p
-        return (self.root / p).resolve()
+            raise ValueError(f"Absolute dataset paths are not allowed: {raw}")
+        root = self.root.resolve()
+        resolved = (root / p).resolve()
+        try:
+            resolved.relative_to(root)
+        except ValueError as exc:
+            raise ValueError(
+                f"Path escapes project root ({root}): {raw}"
+            ) from exc
+        return resolved
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "datasets": [d.to_dict() for d in self.datasets],
             "settings": self.settings,
         }
-
-    def save(self) -> None:
-        # Drop legacy project-wide keys (locus was moved per-dataset; exclude UI removed)
-        drop = {"locus_lookup", "excluded_datasets"}
-        if any(k in self.settings for k in drop):
-            self.settings = {k: v for k, v in self.settings.items() if k not in drop}
-        self.yaml_path.write_text(
-            yaml.safe_dump(self.to_dict(), sort_keys=False),
-            encoding="utf-8",
-        )
 
     @classmethod
     def load(cls, root: str | Path) -> Project:
@@ -114,7 +97,6 @@ class Project:
                 )
                 for d in datasets
             ]
-        # Drop legacy exclude list (replaced by unregister)
         if "excluded_datasets" in settings:
             settings = {k: v for k, v in settings.items() if k != "excluded_datasets"}
         if "locus_lookup" in settings:
@@ -122,68 +104,11 @@ class Project:
         return cls(root=root, datasets=datasets, settings=settings)
 
 
-def create_project(root: str | Path, name: str | None = None) -> Project:
-    """Create working folder + ``project.yaml`` only (no data/fig subfolders)."""
-    root = Path(root).resolve()
-    root.mkdir(parents=True, exist_ok=True)
-    project = Project(root=root, settings={"name": name or root.name})
-    if not project.yaml_path.exists():
-        project.save()
-    else:
-        project = Project.load(root)
-    return project
-
-
-def open_project(root: str | Path, *, readonly: bool = False) -> Project:
+def open_project(root: str | Path) -> Project:
     root = Path(root).resolve()
     if not root.exists():
-        raise FileNotFoundError(f"Working folder not found: {root}")
+        raise FileNotFoundError(f"Data folder not found: {root}")
     yaml_path = root / "project.yaml"
     if not yaml_path.exists():
-        if readonly:
-            raise FileNotFoundError(
-                f"No project.yaml in {root} (read-only mode cannot create one)"
-            )
-        return create_project(root)
+        raise FileNotFoundError(f"No project.yaml in {root}")
     return Project.load(root)
-
-
-def save_figure(
-    fig,
-    stem: str,
-    out_dir: str | Path | None = None,
-    formats: tuple[str, ...] = ("png",),
-    project: Project | None = None,
-) -> list[Path]:
-    """Save a Plotly figure as png/svg/html.
-
-    ``out_dir`` defaults to ``project.figures_dir()`` (``figs/``) when a project is given.
-    Creates ``out_dir`` only when saving.
-    """
-    if out_dir is None:
-        if project is None:
-            raise ValueError("Provide out_dir or project")
-        out_dir = project.figures_dir()
-    out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    saved: list[Path] = []
-    for fmt in formats:
-        fmt = fmt.lower().lstrip(".")
-        path = out_dir / f"{stem}.{fmt}"
-        if fmt == "html":
-            fig.write_html(str(path))
-        elif fmt in {"png", "svg", "pdf", "jpeg", "jpg", "webp"}:
-            fig.write_image(str(path), format=fmt if fmt != "jpg" else "jpeg")
-        else:
-            raise ValueError(f"Unsupported figure format: {fmt}")
-        saved.append(path)
-    return saved
-
-
-def save_export(project: Project, df, filename: str) -> Path:
-    """Save a DataFrame CSV into ``celov_output/`` (created only when saving)."""
-    out_dir = project.exports_dir()
-    out_dir.mkdir(parents=True, exist_ok=True)
-    path = out_dir / filename
-    df.to_csv(path, index=True)
-    return path

@@ -15,12 +15,11 @@ from scipy.spatial.distance import pdist, squareform
 from scipy.stats import false_discovery_control
 from sklearn.decomposition import PCA
 
-from ..components.folder_browser import pick_save_file_dialog
 from ..components.controls import (
     EXPORT_H,
     EXPORT_W,
-    fig_size_controls,
-    set_fig_size,
+    for_viewer,
+    graph_export_config,
 )
 from ..components.gene_meta_mark import (
     entry_dropdown_options,
@@ -48,15 +47,10 @@ from .hc_plots import (
     _leaf_clusters_in_dendro_order,
     cluster_label,
 )
-from .pca_classifier import save_classifier_celov
 from src.biocyc.celov_multiomics_post import load_locus_lookup
-from src.GUI.project import resolve_celov_id_col
 
 
-_GRAPH_CONFIG = {
-    "toImageButtonOptions": {"format": "svg", "filename": "hc_plot"},
-    "displaylogo": False,
-}
+_GRAPH_CONFIG = graph_export_config("hc_plot")
 
 _LINKAGE_METHODS = [
     {"label": "ward", "value": "ward"},
@@ -176,21 +170,6 @@ def _expr_genes_x_samples(rt: dict) -> pd.DataFrame:
         rt["X"].T,
         index=pd.Index(rt["gene_ids"], name="geneID"),
         columns=rt["sample_ids"],
-    )
-
-
-def _volcano_weighed_for_celov(results: pd.DataFrame, score: str) -> pd.DataFrame:
-    """Build gene_weight table for Celov; direction from expression difference sign."""
-    fold = results["fold_change"].astype(float)
-    neg = results["neg_log10_padj"].astype(float)
-    if score == "neg_log10_padj":
-        weight = np.sign(fold.replace(0, np.nan)).fillna(0.0) * neg
-    elif score == "product":
-        weight = fold * neg
-    else:
-        weight = fold
-    return pd.DataFrame(
-        {"geneID": results["geneID"].astype(str).values, "gene_weight": weight.values}
     )
 
 
@@ -485,8 +464,7 @@ class ClusteringModule:
     id = "hc"
     label = "Hierarchical clustering"
 
-    def layout(self, *, readonly: bool = False):
-        write_style = {"display": "none"} if readonly else None
+    def layout(self):
         return html.Div(
             [
                 dbc.Row(
@@ -587,16 +565,19 @@ class ClusteringModule:
                 ),
                 html.Hr(),
                 html.H6("Heatmap (samples × samples)"),
-                fig_size_controls(
-                    "hc-heat",
-                    default_width=760,
-                    default_height=640,
-                ),
                 dbc.Row(
                     [
                         dbc.Col(
                             dcc.Loading(
-                                dcc.Graph(id="hc-heatmap", figure={}, config=_GRAPH_CONFIG),
+                                dcc.Graph(
+                                    id="hc-heatmap",
+                                    figure={},
+                                    config=graph_export_config(
+                                        "hc_heatmap", width=760, height=640
+                                    ),
+                                    responsive=True,
+                                    style={"width": "100%", "height": "640px"},
+                                ),
                                 type="default",
                             ),
                             md=8,
@@ -620,43 +601,6 @@ class ClusteringModule:
                         ),
                     ],
                     className="g-2 mb-3",
-                ),
-                html.Div(
-                    [
-                    html.H6("Export cluster assignments"),
-                    html.P(
-                        "Exports sample metadata with an added column named "
-                        "maxclust :{t} (current cut).",
-                        className="text-muted small mb-2",
-                    ),
-                    dbc.Row(
-                        [
-                            dbc.Col(
-                                dbc.InputGroup(
-                                    [
-                                        dbc.Input(id="hc-export-path", type="text"),
-                                        dbc.Button(
-                                            "Browse…",
-                                            id="hc-export-browse",
-                                            color="info",
-                                            outline=True,
-                                        ),
-                                    ]
-                                ),
-                                md=8,
-                            ),
-                            dbc.Col(
-                                dbc.Button(
-                                    "Export CSV", id="hc-export", color="secondary"
-                                ),
-                                md=2,
-                            ),
-                        ],
-                        className="g-2 mb-2",
-                    ),
-                    ],
-                    id="hc-export-wrap",
-                    style=write_style,
                 ),
                 html.Div(id="hc-status", className="text-muted small mb-2"),
                 html.Div(
@@ -720,36 +664,25 @@ class ClusteringModule:
                         dbc.Row(
                             [
                                 dbc.Col(
-                                    fig_size_controls(
-                                        "hc-pca",
-                                        default_width=EXPORT_W,
-                                        default_height=EXPORT_H,
-                                        heading="PCA size (px)",
+                                    dcc.Graph(
+                                        id="hc-pca",
+                                        figure={},
+                                        config=_GRAPH_CONFIG,
+                                        responsive=True,
+                                        style={"width": "100%", "height": f"{EXPORT_H}px"},
                                     ),
-                                    md=5,
-                                ),
-                                dbc.Col(
-                                    fig_size_controls(
-                                        "hc-dendro",
-                                        default_width=EXPORT_W,
-                                        default_height=360,
-                                        heading="Dendrogram size (px)",
-                                    ),
-                                    md=4,
-                                ),
-                            ],
-                            className="g-2 mb-1",
-                        ),
-                        dbc.Row(
-                            [
-                                dbc.Col(
-                                    dcc.Graph(id="hc-pca", figure={}, config=_GRAPH_CONFIG),
                                     md=5,
                                 ),
                                 dbc.Col(
                                     [
                                         dcc.Graph(
-                                            id="hc-dendro", figure={}, config=_GRAPH_CONFIG
+                                            id="hc-dendro",
+                                            figure={},
+                                            config=graph_export_config(
+                                                "hc_dendrogram", height=360
+                                            ),
+                                            responsive=True,
+                                            style={"width": "100%", "height": "360px"},
                                         ),
                                         html.P(
                                             "Select dendrogram clusters into Bin A or Bin B "
@@ -887,11 +820,6 @@ class ClusteringModule:
                             entry_id="hc-volcano-mark-entry",
                             wrap_id="hc-volcano-mark-wrap",
                         ),
-                        fig_size_controls(
-                            "hc-volcano",
-                            default_width=640,
-                            default_height=520,
-                        ),
                         html.Div(
                             id="hc-volcano-mark-legend",
                             children=mark_legend_banner(0, None),
@@ -903,7 +831,11 @@ class ClusteringModule:
                                         dcc.Graph(
                                             id="hc-volcano",
                                             figure={},
-                                            config=_GRAPH_CONFIG,
+                                            config=graph_export_config(
+                                                "hc_volcano", width=640, height=520
+                                            ),
+                                            responsive=True,
+                                            style={"width": "100%", "height": "520px"},
                                         ),
                                         md=8,
                                     ),
@@ -930,95 +862,6 @@ class ClusteringModule:
                             type="default",
                         ),
                         dcc.Store(id="hc-volcano-last-gene", data=None),
-                        html.Div(
-                            [
-                            html.H6("Save volcano genes (Celov)", className="mt-3"),
-                            dbc.Row(
-                                [
-                                    dbc.Col(
-                                        [
-                                            html.Label("Score"),
-                                            dcc.Dropdown(
-                                                id="hc-volcano-celov-score",
-                                                options=[
-                                                    {
-                                                        "label": "expression difference",
-                                                        "value": "fold_change",
-                                                    },
-                                                    {
-                                                        "label": "−log10(padj)",
-                                                        "value": "neg_log10_padj",
-                                                    },
-                                                    {
-                                                        "label": "product of both",
-                                                        "value": "product",
-                                                    },
-                                                ],
-                                                value="fold_change",
-                                                clearable=False,
-                                            ),
-                                        ],
-                                        md=3,
-                                    ),
-                                    dbc.Col(
-                                        [
-                                            html.Label("Genes"),
-                                            dcc.RadioItems(
-                                                id="hc-volcano-celov-mode",
-                                                options=[
-                                                    {
-                                                        "label": "up & down",
-                                                        "value": "up_and_down",
-                                                    },
-                                                    {"label": "up", "value": "up"},
-                                                    {"label": "down", "value": "down"},
-                                                    {
-                                                        "label": "all together",
-                                                        "value": "all",
-                                                    },
-                                                ],
-                                                value="up_and_down",
-                                                inline=True,
-                                            ),
-                                        ],
-                                        md=4,
-                                    ),
-                                    dbc.Col(
-                                        [
-                                            html.Label("Output path ({} = type)"),
-                                            dbc.InputGroup(
-                                                [
-                                                    dbc.Input(
-                                                        id="hc-volcano-celov-out", type="text"
-                                                    ),
-                                                    dbc.Button(
-                                                        "Browse…",
-                                                        id="hc-volcano-celov-browse",
-                                                        color="info",
-                                                        outline=True,
-                                                    ),
-                                                ]
-                                            ),
-                                        ],
-                                        md=4,
-                                    ),
-                                ],
-                                className="g-2 mb-2",
-                            ),
-                            dbc.Button(
-                                "Save Celov",
-                                id="hc-volcano-celov-save",
-                                color="secondary",
-                                className="mb-2",
-                            ),
-                            html.Div(
-                                id="hc-volcano-celov-status",
-                                className="text-muted small mb-2",
-                            ),
-                            ],
-                            id="hc-volcano-celov-wrap",
-                            style=write_style,
-                        ),
                         dcc.Store(id="hc-cluster-sel", data=_empty_bin_sel()),
                     ],
                 ),
@@ -1026,7 +869,7 @@ class ClusteringModule:
             ]
         )
 
-    def register_callbacks(self, app: Dash, *, readonly: bool = False) -> None:
+    def register_callbacks(self, app: Dash) -> None:
         @app.callback(
             Output("hc-homo-col", "options"),
             Input("session-store", "data"),
@@ -1189,12 +1032,10 @@ class ClusteringModule:
             Output("hc-heatmap", "figure"),
             Input("hc-cache", "data"),
             Input("hc-maxclust-applied", "data"),
-            Input("hc-heat-fig-w", "value"),
-            Input("hc-heat-fig-h", "value"),
             Input("session-store", "data"),
             State("project-store", "data"),
         )
-        def _plot_heatmap(cache, t, fig_w, fig_h, session_blob, project_blob):
+        def _plot_heatmap(cache, t, session_blob, project_blob):
             empty = go.Figure()
             if not _hydrate_hc(cache, session_blob, project_blob):
                 empty.add_annotation(
@@ -1214,10 +1055,7 @@ class ClusteringModule:
                 n = rt["n_samples"]
                 t = max(2, min(int(t or 2), n))
                 labels = _cut_clusters(rt["Z_samples"], t)
-                fig = _sample_distance_fig(rt, labels, dataset=dataset, t=t)
-                return set_fig_size(
-                    fig, fig_w, fig_h, default_width=760, default_height=640
-                )
+                return for_viewer(_sample_distance_fig(rt, labels, dataset=dataset, t=t))
             except Exception as exc:  # noqa: BLE001
                 err = go.Figure()
                 err.add_annotation(text=f"Heatmap error: {exc}", showarrow=False)
@@ -1313,10 +1151,6 @@ class ClusteringModule:
             Input("hc-pca-alpha-a", "value"),
             Input("hc-pca-alpha-b", "value"),
             Input("hc-cluster-sel", "data"),
-            Input("hc-pca-fig-w", "value"),
-            Input("hc-pca-fig-h", "value"),
-            Input("hc-dendro-fig-w", "value"),
-            Input("hc-dendro-fig-h", "value"),
             Input("session-store", "data"),
             State("project-store", "data"),
         )
@@ -1329,10 +1163,6 @@ class ClusteringModule:
             alpha_a,
             alpha_b,
             selected,
-            pca_w,
-            pca_h,
-            dendro_w,
-            dendro_h,
             session_blob,
             project_blob,
         ):
@@ -1357,33 +1187,32 @@ class ClusteringModule:
                 f"in {dataset} ({t} clusters)",
             )
             try:
-                pca_fig = pca_cluster_fig(
-                    score_df,
-                    labels,
-                    x_col,
-                    y_col,
-                    z_col,
-                    selected=sel,
-                    bin_a=bins["a"],
-                    bin_b=bins["b"],
-                    alpha_a=float(alpha_a if alpha_a is not None else 1.0),
-                    alpha_b=float(alpha_b if alpha_b is not None else 1.0),
-                    title=pca_title,
+                pca_fig = for_viewer(
+                    pca_cluster_fig(
+                        score_df,
+                        labels,
+                        x_col,
+                        y_col,
+                        z_col,
+                        selected=sel,
+                        bin_a=bins["a"],
+                        bin_b=bins["b"],
+                        alpha_a=float(alpha_a if alpha_a is not None else 1.0),
+                        alpha_b=float(alpha_b if alpha_b is not None else 1.0),
+                        title=pca_title,
+                    )
                 )
-                dendro_fig = dendrogram_colored_fig(
-                    rt["Z_samples"],
-                    labels,
-                    rt["sample_ids"],
-                    selected=sel,
-                    bin_a=bins["a"],
-                    bin_b=bins["b"],
+                dendro_fig = for_viewer(
+                    dendrogram_colored_fig(
+                        rt["Z_samples"],
+                        labels,
+                        rt["sample_ids"],
+                        selected=sel,
+                        bin_a=bins["a"],
+                        bin_b=bins["b"],
+                    )
                 )
-                return (
-                    set_fig_size(pca_fig, pca_w, pca_h),
-                    set_fig_size(
-                        dendro_fig, dendro_w, dendro_h, default_height=360
-                    ),
-                )
+                return pca_fig, dendro_fig
             except Exception as exc:  # noqa: BLE001
                 err = go.Figure()
                 err.add_annotation(text=f"PCA error: {exc}", showarrow=False)
@@ -1472,8 +1301,6 @@ class ClusteringModule:
             State("hc-volcano-padj", "value"),
             State("hc-volcano-fc", "value"),
             State("hc-volcano-center", "value"),
-            State("hc-volcano-fig-w", "value"),
-            State("hc-volcano-fig-h", "value"),
             State("hc-cache", "data"),
             State("session-store", "data"),
             State("project-store", "data"),
@@ -1486,8 +1313,6 @@ class ClusteringModule:
             padj_thr,
             fc_thr,
             center,
-            fig_w,
-            fig_h,
             cache,
             session_blob,
             project_blob,
@@ -1576,9 +1401,7 @@ class ClusteringModule:
                 xaxis_title=x_label,
                 hover_map=gene_meta_hover_map(rt.get("locus_lookup")),
             )
-            fig = set_fig_size(
-                fig, fig_w, fig_h, default_width=640, default_height=520
-            )
+            fig = for_viewer(fig)
             mark_cols = locus_mark_columns(rt.get("locus_lookup"))
             mark_opts = [{"label": c, "value": c} for c in mark_cols]
             mark_wrap = show if mark_cols else hide
@@ -1599,11 +1422,9 @@ class ClusteringModule:
             Output("hc-volcano-mark-legend", "children", allow_duplicate=True),
             Input("hc-volcano-mark-col", "value"),
             Input("hc-volcano-mark-entry", "value"),
-            Input("hc-volcano-fig-w", "value"),
-            Input("hc-volcano-fig-h", "value"),
             prevent_initial_call=True,
         )
-        def _replot_volcano_marks(mark_col, mark_entry, fig_w, fig_h):
+        def _replot_volcano_marks(mark_col, mark_entry):
             results = _HC_RUNTIME.get("volcano_results")
             meta = _HC_RUNTIME.get("volcano_plot_meta")
             if results is None or not meta:
@@ -1622,10 +1443,7 @@ class ClusteringModule:
                 mark_label=mark_label,
                 hover_map=gene_meta_hover_map(_HC_RUNTIME.get("locus_lookup")),
             )
-            return (
-                set_fig_size(fig, fig_w, fig_h, default_width=640, default_height=520),
-                mark_legend_banner(n_mark, mark_label),
-            )
+            return for_viewer(fig), mark_legend_banner(n_mark, mark_label)
 
         @app.callback(
             Output("hc-volcano-mark-entry", "options"),
@@ -1667,118 +1485,3 @@ class ClusteringModule:
                 return gene_detail_placeholder()
             return gene_detail_table(str(last_gene), _HC_RUNTIME.get("locus_lookup"))
 
-        if readonly:
-            return
-
-        @app.callback(
-            Output("hc-volcano-celov-out", "value"),
-            Output("hc-volcano-celov-status", "children", allow_duplicate=True),
-            Input("hc-volcano-celov-browse", "n_clicks"),
-            State("hc-volcano-celov-out", "value"),
-            State("project-store", "data"),
-            prevent_initial_call=True,
-        )
-        def _browse_volcano_celov(n_clicks, current, project_blob):
-            initial = (project_blob or {}).get("root") or current
-            chosen = pick_save_file_dialog(
-                initial=initial,
-                title="Save volcano Celov (use {} for type)",
-                defaultextension=".txt",
-                initialfile="HC_Volcano_{}.txt",
-            )
-            if not chosen:
-                return no_update, "Celov path browse cancelled."
-            p = Path(chosen)
-            if "{}" not in p.name:
-                chosen = str(p.with_name(f"{p.stem}_{{}}{p.suffix or '.txt'}"))
-            return chosen, f"Celov output template: {chosen}"
-
-        @app.callback(
-            Output("hc-volcano-celov-status", "children"),
-            Input("hc-volcano-celov-save", "n_clicks"),
-            State("hc-volcano-celov-out", "value"),
-            State("hc-volcano-celov-mode", "value"),
-            State("hc-volcano-celov-score", "value"),
-            State("session-store", "data"),
-            State("project-store", "data"),
-            prevent_initial_call=True,
-        )
-        def _save_volcano_celov(
-            n_clicks, out_path, mode, score, session_blob, project_blob
-        ):
-            results = _HC_RUNTIME.get("volcano_results")
-            if results is None or not isinstance(results, pd.DataFrame) or results.empty:
-                return "Run volcano first."
-            if not out_path or not str(out_path).strip():
-                return "Choose an output .txt path (Browse)."
-            try:
-                weighed = _volcano_weighed_for_celov(results, score or "fold_change")
-                lookup = None
-                locus = _locus_path_from_session(session_blob, project_blob)
-                if locus:
-                    lookup = load_locus_lookup(locus)
-                paths = save_classifier_celov(
-                    weighed,
-                    str(out_path).strip(),
-                    mode=mode or "up_and_down",
-                    locus_lookup=lookup,
-                    id_column=resolve_celov_id_col(
-                        _active_dataset_entry(session_blob, project_blob)
-                    ),
-                )
-                return "Saved Celov: " + ", ".join(str(p) for p in paths)
-            except Exception as exc:  # noqa: BLE001
-                return f"Celov save error: {exc}"
-
-        @app.callback(
-            Output("hc-export-path", "value"),
-            Output("hc-status", "children", allow_duplicate=True),
-            Input("hc-export-browse", "n_clicks"),
-            State("hc-export-path", "value"),
-            State("project-store", "data"),
-            prevent_initial_call=True,
-        )
-        def _browse_export(n_clicks, current, project_blob):
-            initial = (project_blob or {}).get("root") or current
-            chosen = pick_save_file_dialog(
-                initial=initial,
-                title="Export HC cluster assignments",
-                defaultextension=".csv",
-                initialfile="hc_clusters.csv",
-            )
-            if not chosen:
-                return no_update, "Export browse cancelled."
-            return chosen, f"Export path: {chosen}"
-
-        @app.callback(
-            Output("hc-status", "children", allow_duplicate=True),
-            Input("hc-export", "n_clicks"),
-            State("hc-export-path", "value"),
-            State("hc-maxclust-applied", "data"),
-            State("hc-cache", "data"),
-            State("session-store", "data"),
-            State("project-store", "data"),
-            prevent_initial_call=True,
-        )
-        def _export(n_clicks, path, t, cache, session_blob, project_blob):
-            if not _hydrate_hc(cache, session_blob, project_blob):
-                return "Run clustering first."
-            if not path or not str(path).strip():
-                return "Choose an export path (Browse)."
-            rt = _HC_RUNTIME
-            t = max(2, min(int(t or 2), rt["n_samples"]))
-            labels = _cut_clusters(rt["Z_samples"], t)
-            out = rt["score_df"].copy()
-            cluster_col = f"maxclust :{t}"
-            out.insert(0, cluster_col, labels)
-            cols = [c for c in ["fileName", cluster_col] if c in out.columns]
-            extra = [
-                c
-                for c in out.columns
-                if c not in cols and not (c.startswith("PC") and c[2:].isdigit())
-            ]
-            out = out[cols + extra]
-            p = Path(str(path).strip())
-            p.parent.mkdir(parents=True, exist_ok=True)
-            out.to_csv(p, index=True, index_label="sample_id")
-            return f"Exported {len(out)} samples with column {cluster_col!r} → {p}"

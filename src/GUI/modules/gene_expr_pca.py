@@ -15,27 +15,27 @@ from plotly.subplots import make_subplots
 from src.biocyc.celov_multiomics_post import load_locus_lookup
 
 from ..components.controls import (
-    EXPORT_H,
-    EXPORT_W,
     _marker_sizes,
     _point_symbols,
     aesthetic_options,
     apply_export_layout,
-    fig_size_controls,
+    for_viewer,
+    graph_export_config,
     parse_aes_choice,
-    set_fig_size,
 )
 from ..components.gene_meta_mark import GENE_HOVER_COLUMNS
+from ..components.sample_detail import (
+    plot_with_sample_detail,
+    register_sample_detail_callback,
+)
 from ..data_store import session_from_store
 from .clustering import _locus_path_from_session
 from .pca import _PCA_RUNTIME, _run_pca, _score_frame_for_plot
 
-_GRAPH_CONFIG = {
-    "toImageButtonOptions": {"format": "svg", "filename": "gene_expression_profiles"},
-    "displaylogo": False,
-}
+_GRAPH_CONFIG = graph_export_config("gene_expression_profiles")
 _EXPR_COLS = 2
 _SEARCH_LIMIT = 80
+_GXP_RUNTIME: dict = {}
 
 
 def _plotly_title(*lines: str) -> dict:
@@ -252,15 +252,17 @@ def _expr_pca_figure(
         fig.update_xaxes(title_text=x_label if row == n_rows else "", row=row, col=col)
         fig.update_yaxes(title_text=y_label if col == 1 else "", row=row, col=col)
     fig.update_layout(title=_plotly_title("Gene expression on PCA"))
-    apply_export_layout(fig, title_lines=1, legend=False, height=max(420, 320 * n_rows))
-    return fig
+    apply_export_layout(
+        fig, title_lines=1, legend=False, width=None, height=None
+    )
+    return for_viewer(fig)
 
 
 class GeneExprPCAModule:
     id = "gene-expr-pca"
     label = "Gene expression profiles"
 
-    def layout(self, *, readonly: bool = False):
+    def layout(self):
         return html.Div(
             [
                 html.P(
@@ -348,16 +350,22 @@ class GeneExprPCAModule:
                     ],
                     className="g-2 mb-2",
                 ),
-                fig_size_controls("gxp", default_width=EXPORT_W, default_height=EXPORT_H),
                 dcc.Loading(
-                    dcc.Graph(id="gxp-fig", figure={}, config=_GRAPH_CONFIG),
+                    plot_with_sample_detail(
+                        "gxp-fig",
+                        "gxp-sample-detail",
+                        graph_config=_GRAPH_CONFIG,
+                        graph_md=8,
+                        detail_md=4,
+                        graph_style={"width": "100%", "height": "560px"},
+                    ),
                     type="default",
                 ),
                 dcc.Store(id="gxp-cache"),
             ]
         )
 
-    def register_callbacks(self, app: Dash, *, readonly: bool = False) -> None:
+    def register_callbacks(self, app: Dash) -> None:
         @app.callback(
             Output("gxp-gene-pick", "options"),
             Input("gxp-gene-pick", "search_value"),
@@ -448,11 +456,10 @@ class GeneExprPCAModule:
 
         @app.callback(
             Output("gxp-fig", "figure"),
+            Output("gxp-fig", "style"),
             Output("gxp-status", "children"),
             Output("gxp-cache", "data"),
             Input("gxp-run", "n_clicks"),
-            Input("gxp-fig-w", "value"),
-            Input("gxp-fig-h", "value"),
             Input("gxp-shape", "value"),
             Input("gxp-size", "value"),
             Input("gxp-x", "value"),
@@ -467,8 +474,6 @@ class GeneExprPCAModule:
         )
         def _run(
             n_clicks,
-            fig_w,
-            fig_h,
             shape,
             size,
             x_col,
@@ -481,9 +486,10 @@ class GeneExprPCAModule:
             gxp_cache,
         ):
             empty = go.Figure()
+            style = {"width": "100%", "height": "560px"}
             session = session_from_store(session_blob)
             if not session.ready or session.expression is None:
-                return empty, session.error or "Load a dataset first.", no_update
+                return empty, style, session.error or "Load a dataset first.", no_update
             have = set(session.expression.columns.astype(str))
             genes = []
             for gid in list(picked or []) + _parse_gene_ids(paste_text):
@@ -497,11 +503,12 @@ class GeneExprPCAModule:
                 if missing:
                     return (
                         empty,
+                        style,
                         f"No matching geneIDs in matrix "
                         f"(e.g. {', '.join(missing[:5])}{'…' if len(missing) > 5 else ''}).",
                         no_update,
                     )
-                return empty, "Paste or pick at least one geneID.", no_update
+                return empty, style, "Paste or pick at least one geneID.", no_update
             lookup = None
             path = _locus_path_from_session(session_blob, project_blob)
             if path:
@@ -531,7 +538,7 @@ class GeneExprPCAModule:
                         )
                         var = list(map(float, var))
                     except Exception as exc:  # noqa: BLE001
-                        return empty, f"PCA error: {exc}", no_update
+                        return empty, style, f"PCA error: {exc}", no_update
             if session.metadata is not None:
                 missing = [c for c in session.metadata.columns if c not in score_df.columns]
                 if missing:
@@ -540,6 +547,8 @@ class GeneExprPCAModule:
             y_col = y_col if y_col in score_df.columns else (
                 "PC2" if "PC2" in score_df.columns else "PC1"
             )
+            n_rows = int(math.ceil(len(genes) / _EXPR_COLS))
+            style = {"width": "100%", "height": f"{max(420, 320 * n_rows)}px"}
             try:
                 fig = _expr_pca_figure(
                     score_df,
@@ -552,13 +561,21 @@ class GeneExprPCAModule:
                     shape=shape,
                     size=size,
                 )
-                fig = set_fig_size(fig, fig_w, fig_h)
             except Exception as exc:  # noqa: BLE001
-                return empty, f"Plot error: {exc}", no_update
+                return empty, style, f"Plot error: {exc}", no_update
+            _GXP_RUNTIME["score_df"] = score_df
             n_pcs = sum(
                 1
                 for c in score_df.columns
                 if str(c).startswith("PC") and str(c)[2:].isdigit()
             )
             msg = f"Showing {len(genes)} gene(s) on {x_col} vs {y_col}."
-            return fig, msg, {"n_pcs": n_pcs, "genes": genes}
+            return fig, style, msg, {"n_pcs": n_pcs, "genes": genes}
+
+        register_sample_detail_callback(
+            app,
+            graph_id="gxp-fig",
+            detail_id="gxp-sample-detail",
+            cache_id="gxp-cache",
+            get_score_df=lambda _c: _GXP_RUNTIME.get("score_df"),
+        )

@@ -1,10 +1,4 @@
-"""Runtime mode shared by desktop and gunicorn/nginx deployments.
-
-On the ``Virtual-server`` branch the **safe default is read-only**. Writable
-desktop UI requires an explicit opt-in (``--writable`` / ``DASH_WRITABLE=1``).
-That way a mistaken ``python -m src.GUI.app`` on the lab VM cannot expose
-register / export / Filter.
-"""
+"""Runtime helpers for the Virtual-server (always read-only) dashboard."""
 
 from __future__ import annotations
 
@@ -13,32 +7,22 @@ from dataclasses import dataclass
 
 from dash import Dash
 
-_CONFIG_KEY = "INTERACTIVE_RNASEQ_READONLY"
-_DEFAULT_DATA_ROOT = "/home/lab/data/Johannes/biofilm-microenvironments2"
-# Public alias for app.py / deploy (readonly fallback).
-SERVER_DEFAULT_DATA_ROOT = _DEFAULT_DATA_ROOT
+_CONFIG_KEY = "INTERACTIVE_RNASEQ_MODE"
 
-# Virtual-server branch: default to readonly. On ``main`` this should be False.
-DEPLOYMENT_READONLY_DEFAULT = True
+# Lab data folder for gunicorn / default CLI.
+DATA_ROOT = "/home/lab/data/Johannes/biofilm-microenvironments2"
+SERVER_DEFAULT_DATA_ROOT = DATA_ROOT
 
 
 @dataclass(frozen=True)
 class AppMode:
-    """How the Dash app is presented and which write paths are enabled."""
+    """Fixed data root for this process (always read-only viewer)."""
 
-    readonly: bool = True
-    data_root: str | None = None  # fixed folder when set (server / --project)
+    data_root: str
 
     @property
-    def default_project(self) -> str | None:
+    def default_project(self) -> str:
         return self.data_root
-
-
-def env_flag(name: str, default: bool = False) -> bool:
-    raw = os.environ.get(name)
-    if raw is None or str(raw).strip() == "":
-        return default
-    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def normalize_url_base_pathname(raw: str | None) -> str | None:
@@ -55,34 +39,14 @@ def normalize_url_base_pathname(raw: str | None) -> str | None:
     return text
 
 
-def mode_from_env(
-    *,
-    readonly: bool | None = None,
-    default_project: str | None = None,
-) -> AppMode:
-    """Resolve mode from explicit kwargs, then environment.
-
-    Precedence for readonly:
-    1. Explicit ``readonly=`` kwarg (``True`` / ``False``)
-    2. ``DASH_WRITABLE=1`` → writable (escape hatch)
-    3. ``DASH_READONLY`` if set
-    4. ``DEPLOYMENT_READONLY_DEFAULT`` (True on Virtual-server)
-    """
-    if readonly is not None:
-        ro = bool(readonly)
-    elif env_flag("DASH_WRITABLE", False):
-        ro = False
-    elif os.environ.get("DASH_READONLY") is not None and str(
-        os.environ.get("DASH_READONLY")
-    ).strip() != "":
-        ro = env_flag("DASH_READONLY", True)
-    else:
-        ro = DEPLOYMENT_READONLY_DEFAULT
-
-    root = default_project or os.environ.get("DASH_DEFAULT_PROJECT") or None
-    if ro and not root:
-        root = os.environ.get("DASH_DATA_ROOT") or _DEFAULT_DATA_ROOT
-    return AppMode(readonly=ro, data_root=root)
+def data_root_from_env(default_project: str | None = None) -> str:
+    """Resolve data root: explicit arg, then env, then ``DATA_ROOT``."""
+    return (
+        (default_project or "").strip()
+        or (os.environ.get("DASH_DEFAULT_PROJECT") or "").strip()
+        or (os.environ.get("DASH_DATA_ROOT") or "").strip()
+        or DATA_ROOT
+    )
 
 
 def attach_mode(app: Dash, mode: AppMode) -> None:
@@ -94,8 +58,4 @@ def get_mode(app: Dash | None = None) -> AppMode:
         mode = app.server.config.get(_CONFIG_KEY)
         if isinstance(mode, AppMode):
             return mode
-    return mode_from_env()
-
-
-def is_readonly(app: Dash | None = None) -> bool:
-    return get_mode(app).readonly
+    return AppMode(data_root=data_root_from_env())

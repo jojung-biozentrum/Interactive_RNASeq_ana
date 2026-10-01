@@ -191,17 +191,32 @@ def plot_with_sample_detail(
     graph_config: dict | None = None,
     graph_md: int = 8,
     detail_md: int = 4,
+    graph_style: dict | None = None,
+    responsive: bool = True,
 ) -> dbc.Row:
+    style = {"width": "100%", "height": "560px"}
+    if graph_style:
+        style.update(graph_style)
     return dbc.Row(
         [
             dbc.Col(
-                dcc.Graph(id=graph_id, figure={}, config=graph_config or {}),
+                dcc.Graph(
+                    id=graph_id,
+                    figure={},
+                    config=graph_config or {},
+                    responsive=responsive,
+                    style=style,
+                ),
                 md=graph_md,
             ),
             dbc.Col(
                 html.Div(
                     [
                         html.H6("Sample metadata", className="mb-2"),
+                        html.P(
+                            "Click a point to see sample metadata.",
+                            className="text-muted small mb-2",
+                        ),
                         html.Div(id=detail_id, children=sample_detail_placeholder()),
                     ],
                     className="border rounded p-2 bg-light",

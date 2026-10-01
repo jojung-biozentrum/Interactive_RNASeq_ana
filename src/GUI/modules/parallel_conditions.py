@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import math
-from pathlib import Path
-
 from dash import ALL, Dash, Input, Output, State, callback_context, dcc, html, no_update
 import dash_bootstrap_components as dbc
 import numpy as np
@@ -15,16 +13,13 @@ from scipy.cluster import hierarchy
 from sklearn.decomposition import PCA
 
 from src.biocyc.celov_multiomics_post import load_locus_lookup
-from src.GUI.project import resolve_celov_id_col
-
 from ..components.controls import (
     EXPORT_H,
-    EXPORT_W,
     SHAPE_CONSTANTS,
     apply_export_layout,
     equal_xy_axes,
-    fig_size_controls,
-    set_fig_size,
+    for_viewer,
+    graph_export_config,
     _LEGEND_GREY,
     _LEGEND_STD_SIZE,
     _MISSING_COLOR,
@@ -37,7 +32,6 @@ from ..components.controls import (
     _shape_map,
     _size_map,
 )
-from ..components.folder_browser import pick_save_file_dialog
 from ..components.sample_detail import (
     lookup_sample,
     sample_detail_placeholder,
@@ -46,7 +40,6 @@ from ..components.sample_detail import (
 from ..components.gene_meta_mark import filter_ids_by_search, gene_hover_text, gene_meta_hover_map
 from ..data_store import session_from_store
 from .clustering import (
-    _active_dataset_entry,
     _locus_path_from_session,
 )
 from .gene_gradients import (
@@ -70,7 +63,6 @@ from .gene_gradients import (
     gene_profile_grid_fig,
     gene_region_gradients,
     gradient_scatter_fig,
-    save_gradient_celov,
 )
 
 _PAR_RUNTIME: dict = {}
@@ -956,9 +948,8 @@ class ParallelConditionsModule:
     id = "parallel-conditions"
     label = "Parallel conditions"
 
-    def layout(self, *, readonly: bool = False):
-        write_style = {"display": "none"} if readonly else None
-        return html.Div([self._samples(), self._genes(write_style)])
+    def layout(self):
+        return html.Div([self._samples(), self._genes()])
 
     def _samples(self):
         return html.Div(
@@ -1032,15 +1023,6 @@ class ParallelConditionsModule:
                             ],
                             md=2,
                         ),
-                        dbc.Col(
-                            fig_size_controls(
-                                "par-pca",
-                                default_width=EXPORT_W,
-                                default_height=EXPORT_H,
-                                heading="PCA size (px)",
-                            ),
-                            md=6,
-                        ),
                     ],
                     className="g-2 mb-2",
                 ),
@@ -1093,7 +1075,7 @@ class ParallelConditionsModule:
             ]
         )
 
-    def _genes(self, write_style):
+    def _genes(self):
         return html.Div(
             [
                 html.H6("Pooled gene gradients"),
@@ -1222,78 +1204,6 @@ class ParallelConditionsModule:
                     ],
                     className="g-2 mb-2",
                 ),
-                html.Div([
-                html.H6("Save Celov", className="mt-2"),
-                dbc.Row(
-                    [
-                        dbc.Col(
-                            [
-                                html.Label("Score"),
-                                dcc.Dropdown(
-                                    id="par-grad-celov-score",
-                                    options=[
-                                        {"label": "Pearson ρ (closest)", "value": "pearson_rho"},
-                                        {"label": "Spearman ρ (closest)", "value": "spearman_rho"},
-                                        {
-                                            "label": "Pearson ρ (levels)",
-                                            "value": "pearson_rho_biofilm",
-                                        },
-                                        {
-                                            "label": "Spearman ρ (levels)",
-                                            "value": "spearman_rho_biofilm",
-                                        },
-                                    ],
-                                    value="pearson_rho",
-                                    clearable=False,
-                                ),
-                            ],
-                            md=3,
-                        ),
-                        dbc.Col(
-                            [
-                                html.Label("Genes"),
-                                dcc.RadioItems(
-                                    id="par-grad-celov-mode",
-                                    options=[
-                                        {"label": "up & down", "value": "up_and_down"},
-                                        {"label": "up", "value": "up"},
-                                        {"label": "down", "value": "down"},
-                                        {"label": "all together", "value": "all"},
-                                    ],
-                                    value="up_and_down",
-                                    inline=True,
-                                ),
-                            ],
-                            md=4,
-                        ),
-                        dbc.Col(
-                            [
-                                html.Label("Output path ({} = type)"),
-                                dbc.InputGroup(
-                                    [
-                                        dbc.Input(id="par-grad-celov-out", type="text"),
-                                        dbc.Button(
-                                            "Browse…",
-                                            id="par-grad-celov-browse",
-                                            color="info",
-                                            outline=True,
-                                        ),
-                                    ]
-                                ),
-                            ],
-                            md=4,
-                        ),
-                    ],
-                    className="g-2 mb-2",
-                ),
-                dbc.Button(
-                    "Save Celov",
-                    id="par-grad-celov-save",
-                    color="secondary",
-                    className="mb-2",
-                ),
-                html.Div(id="par-grad-celov-status", className="text-muted small mb-2"),
-                ], style=write_style),
                 dcc.Store(id="par-grad-cache"),
                 dcc.Store(id="par-grad-selected", data=[]),
                 html.Hr(),
@@ -1351,7 +1261,7 @@ class ParallelConditionsModule:
             ]
         )
 
-    def register_callbacks(self, app: Dash, *, readonly: bool = False) -> None:
+    def register_callbacks(self, app: Dash) -> None:
         @app.callback(
             Output("par-subset-col", "options"),
             Output("par-order-col", "options"),
@@ -1565,8 +1475,6 @@ class ParallelConditionsModule:
             Input("par-pca-x", "value"),
             Input("par-pca-y", "value"),
             Input("par-pca-z", "value"),
-            Input("par-pca-fig-w", "value"),
-            Input("par-pca-fig-h", "value"),
             State("session-store", "data"),
         )
         def _plot_par_pca(
@@ -1577,8 +1485,6 @@ class ParallelConditionsModule:
             x_col,
             y_col,
             z_col,
-            fig_w,
-            fig_h,
             session_blob,
         ):
             if not cache or not _hydrate_par_from_cache(cache, session_blob):
@@ -1638,18 +1544,14 @@ class ParallelConditionsModule:
                         f"closest n={len(hl_map.get(level) or [])}",
                     ),
                 )
-                fig = set_fig_size(fig, fig_w, fig_h)
+                fig = for_viewer(fig)
                 panels.append(
                     dcc.Graph(
                         id={"type": "par-pca-fig", "level": level},
                         figure=fig,
-                        config={
-                            "toImageButtonOptions": {
-                                "format": "svg",
-                                "filename": f"par_pca_{level}",
-                            },
-                            "displaylogo": False,
-                        },
+                        responsive=True,
+                        style={"width": "100%", "height": f"{EXPORT_H}px"},
+                        config=graph_export_config(f"par_pca_{level}"),
                     )
                 )
             if not panels:
@@ -1972,70 +1874,3 @@ class ParallelConditionsModule:
                 results=results,
             )
 
-        if readonly:
-            return
-
-        @app.callback(
-            Output("par-grad-celov-out", "value"),
-            Output("par-grad-celov-status", "children", allow_duplicate=True),
-            Input("par-grad-celov-browse", "n_clicks"),
-            State("par-grad-celov-out", "value"),
-            State("project-store", "data"),
-            prevent_initial_call=True,
-        )
-        def _browse_par_grad_celov(n_clicks, current, project_blob):
-            initial = (project_blob or {}).get("root") or current
-            chosen = pick_save_file_dialog(
-                initial=initial,
-                title="Save pooled gradient Celov (use {} for type)",
-                defaultextension=".txt",
-                initialfile="ParGeneGradient_{}.txt",
-            )
-            if not chosen:
-                return no_update, "Celov path browse cancelled."
-            p = Path(chosen)
-            if "{}" not in p.name:
-                chosen = str(p.with_name(f"{p.stem}_{{}}{p.suffix or '.txt'}"))
-            return chosen, f"Celov output template: {chosen}"
-
-        @app.callback(
-            Output("par-grad-celov-status", "children"),
-            Input("par-grad-celov-save", "n_clicks"),
-            State("par-grad-cache", "data"),
-            State("par-grad-celov-out", "value"),
-            State("par-grad-celov-mode", "value"),
-            State("par-grad-celov-score", "value"),
-            State("session-store", "data"),
-            State("project-store", "data"),
-            prevent_initial_call=True,
-        )
-        def _save_par_grad_celov(
-            n_clicks, grad_cache, out_path, mode, score_col, session_blob, project_blob
-        ):
-            results = _PAR_RUNTIME.get("grad_results")
-            if results is None and grad_cache and grad_cache.get("results"):
-                results = pd.DataFrame(grad_cache["results"])
-            if results is None or not isinstance(results, pd.DataFrame) or results.empty:
-                return "Run pooled gradients first."
-            if not out_path or not str(out_path).strip():
-                return "Choose an output .txt path (Browse)."
-            score_col = score_col or "pearson_rho"
-            if score_col not in results.columns:
-                return f"Score column {score_col!r} was not computed — re-run gradients."
-            try:
-                entry = _active_dataset_entry(session_blob, project_blob)
-                lookup = None
-                locus = _locus_path_from_session(session_blob, project_blob)
-                if locus:
-                    lookup = load_locus_lookup(locus)
-                paths = save_gradient_celov(
-                    results,
-                    score_col,
-                    str(out_path).strip(),
-                    mode=mode or "up_and_down",
-                    locus_lookup=lookup,
-                    id_column=resolve_celov_id_col(entry),
-                )
-                return "Saved Celov: " + ", ".join(str(p) for p in paths)
-            except Exception as exc:  # noqa: BLE001
-                return f"Celov save error: {exc}"

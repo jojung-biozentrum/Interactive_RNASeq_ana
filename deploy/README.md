@@ -1,8 +1,8 @@
-# Virtual-server deploy (read-only)
+# Virtual-server deploy (always read-only)
 
-Goal: **one** process, **forced** read-only, fixed data folder, basic auth.
+Goal: **one** process, always read-only, fixed data folder, basic auth.
 
-Writable register / Filter / Celov must not run on the lab VM.
+No register / Filter / Celov / CSV export UI on this branch.
 
 ## 1. Code
 
@@ -14,8 +14,8 @@ git fetch && git checkout Virtual-server && git pull
 Confirm:
 
 ```bash
-grep DEPLOYMENT_READONLY_DEFAULT src/GUI/runtime.py   # True
-grep 'readonly=True' src/GUI/wsgi.py
+grep DATA_ROOT src/GUI/runtime.py   # lab biofilm-microenvironments2 path
+grep create_app src/GUI/wsgi.py
 ```
 
 ## 2. Secret TOML
@@ -54,8 +54,6 @@ URL: `https://dashboard-drescher.biozentrum.unibas.ch/interactive/`
 
 ## 5. Custom wrappers (if you already have one)
 
-This is **enough** and stays read-only (URL prefix forces readonly):
-
 ```python
 import sys
 sys.path.insert(0, "/home/lab/Interactive_RNASeq_ana")
@@ -81,7 +79,7 @@ sudo systemctl restart dashboard-interactive
 
 ## 7. Sanity check
 
-Read-only UI: **no** “Working folder”, **no** Register / Unregister, **no** Filter tab.
+UI: **no** “Working folder”, **no** Register / Unregister, **no** Filter / Celov / Export.
 
 ```bash
 systemctl cat dashboard-interactive | grep -E 'ExecStart|DASH_'
@@ -92,6 +90,23 @@ ss -lptn | grep 8052
 
 | Command | Mode |
 |---|---|
-| `gunicorn src.GUI.wsgi:server` | Forced read-only |
-| `create_app(url_base_pathname="/interactive/", …)` | Forced read-only |
-| `python -m src.GUI.app --writable` | Desktop only — do not use on VM |
+| `gunicorn src.GUI.wsgi:server` | Always read-only |
+| `create_app(…)` | Always read-only |
+| `python -m src.GUI.app --secret-config …` | Always read-only |
+
+## Security
+
+### Virtual server
+
+1. **Basic Auth TOML** — plaintext `user` / `pwd`. Keep the file mode `600`, lab-only password; nginx must proxy to gunicorn on `127.0.0.1` only.
+2. **Never bind gunicorn publicly** — auth is app-level; rely on nginx TLS + localhost bind (`-b 127.0.0.1:8052`).
+3. **Volcano filter DSL** uses a restricted `eval` in `volcano_condition.py` — authenticated users only; treat a public bind as unsafe. AST rewrite is a follow-up.
+4. **Dataset paths** in `project.yaml` are sandboxed under the project root (`Project.resolve`); absolute / `..` escapes are rejected.
+5. **Plotly client SVG/PNG download** is browser-side (expected; no server write).
+
+### Publishing this repo
+
+1. Keep personal WSL paths out of `src/`; institutional lab paths belong in `deploy/` only.
+2. Never commit secret TOML (gitignored).
+3. This branch is the server viewer — do not advertise it as a general writable desktop app (use a separate writable branch/`main` for that).
+4. Internal hostname in this README is intentional for the lab; redact if the repo goes fully public outside the org.

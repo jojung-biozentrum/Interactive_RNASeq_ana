@@ -15,19 +15,16 @@ from ..components.controls import (
     apply_export_layout,
     build_scatter,
     equal_xy_axes,
-    fig_size_controls,
+    for_viewer,
+    graph_export_config,
     parse_aes_choice,
-    set_fig_size,
 )
 from ..components.sample_detail import plot_with_sample_detail, register_sample_detail_callback
 from ..data_store import SessionData, session_from_store
 
 _AES_ALL = "__all__"
 _AES_PREFIX = "umap-aes"
-_GRAPH_CONFIG = {
-    "toImageButtonOptions": {"format": "svg", "filename": "umap_plot"},
-    "displaylogo": False,
-}
+_GRAPH_CONFIG = graph_export_config("umap_plot")
 _DEFAULT_AES = {
     "color": None,
     "shape": None,
@@ -252,7 +249,7 @@ class UMAPModule:
     id = "umap"
     label = "UMAP"
 
-    def layout(self, *, readonly: bool = False):
+    def layout(self):
         return html.Div(
             [
                 dbc.Row(
@@ -370,12 +367,12 @@ class UMAPModule:
                     className="text-muted small mb-2",
                 ),
                 html.Div(id="umap-aes-panels"),
-                fig_size_controls("umap", default_width=EXPORT_W, default_height=EXPORT_H),
                 dcc.Loading(
                     plot_with_sample_detail(
                         "umap-scatter",
                         "umap-sample-detail",
                         graph_config=_GRAPH_CONFIG,
+                        graph_style={"width": "100%", "height": f"{EXPORT_H}px"},
                     ),
                     type="default",
                 ),
@@ -386,7 +383,7 @@ class UMAPModule:
             ]
         )
 
-    def register_callbacks(self, app: Dash, *, readonly: bool = False) -> None:
+    def register_callbacks(self, app: Dash) -> None:
         def _meta_columns(session_blob, cache) -> list[str]:
             cols = list((session_blob or {}).get("meta_columns", []))
             if cache and "scores" in cache:
@@ -538,13 +535,11 @@ class UMAPModule:
             Input("umap-z", "value"),
             Input("umap-split-col", "value"),
             Input("umap-group-aes", "data"),
-            Input("umap-fig-w", "value"),
-            Input("umap-fig-h", "value"),
             Input("session-store", "data"),
             Input("ds-active", "value"),
         )
         def _replot(
-            cache, x_col, y_col, z_col, split_col, group_aes, fig_w, fig_h, session_blob, active
+            cache, x_col, y_col, z_col, split_col, group_aes, session_blob, active
         ):
             empty = go.Figure()
             if not cache:
@@ -583,7 +578,7 @@ class UMAPModule:
                         raw.get("alpha"),
                         title=title,
                     )
-                return set_fig_size(fig, fig_w, fig_h)
+                return for_viewer(fig)
             except Exception as exc:  # noqa: BLE001
                 err = go.Figure()
                 err.add_annotation(text=f"Plot error: {exc}", showarrow=False)

@@ -1,14 +1,9 @@
-"""MODULE_REGISTRY — add a new analysis tab by importing and appending here.
-
-Filter (writes matrices) is omitted when ``readonly=True`` so the Virtual-server
-build shares this file with desktop ``main``.
-"""
+"""MODULE_REGISTRY — add a new analysis tab by importing and appending here."""
 
 from __future__ import annotations
 
 from .base import AnalysisModule
 from .clustering import ClusteringModule
-from .filter_matrix import FilterModule
 from .gene_expr_pca import GeneExprPCAModule
 from .gene_gradients import GeneGradientsModule
 from .parallel_conditions import ParallelConditionsModule
@@ -16,7 +11,6 @@ from .pca import PCAModule
 from .umap_mod import UMAPModule
 from .volcano_condition import VolcanoConditionModule
 
-# Default full registry (desktop). Prefer ``build_registry`` from ``create_app``.
 MODULE_REGISTRY: list[AnalysisModule] = [
     PCAModule(),
     UMAPModule(),
@@ -25,21 +19,4 @@ MODULE_REGISTRY: list[AnalysisModule] = [
     GeneGradientsModule(),
     ParallelConditionsModule(),
     GeneExprPCAModule(),
-    FilterModule(),
 ]
-
-
-def build_registry(*, readonly: bool = False) -> list[AnalysisModule]:
-    """Analysis tabs for this process. Write-only tabs drop out in readonly mode."""
-    mods: list[AnalysisModule] = [
-        PCAModule(),
-        UMAPModule(),
-        ClusteringModule(),
-        VolcanoConditionModule(),
-        GeneGradientsModule(),
-        ParallelConditionsModule(),
-        GeneExprPCAModule(),
-    ]
-    if not readonly:
-        mods.append(FilterModule())
-    return mods

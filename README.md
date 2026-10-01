@@ -20,21 +20,17 @@ This interactive interface was created using the cursor agent. The single analys
 
 ## Interactive viewer
 
-On the **`Virtual-server` branch the default is read-only** (safe for the lab
-VM). Accidental `python -m src.GUI.app` will **not** show Working folder /
-Register / Filter. Writable desktop UI needs an explicit `--writable` (or
-`DASH_WRITABLE=1`) and must not be used on the server.
+The **`Virtual-server` branch is always read-only** (lab VM viewer). There is
+no Working folder / Register / Filter / Celov / CSV export UI.
 
-Gunicorn must use `src.GUI.wsgi:server`, which **forces** readonly (see
+Gunicorn must use `src.GUI.wsgi:server` (see
 [deploy/README.md](deploy/README.md)). On the lab VM run
 `bash deploy/install-dashboard-interactive.sh` once so systemd owns the
-process. Any wrapper that passes `url_base_pathname="/interactive/"` is also
-forced read-only by `create_app`.
+process.
 
-In read-only mode the data folder is fixed
-(`…/biofilm-microenvironments2` or `DASH_DEFAULT_PROJECT`), auth is required,
-and Celov / CSV / register / Filter are hidden. Analysis tabs stay shared with
-`main`.
+The data folder defaults to the lab path in `src/GUI/runtime.py`
+(`DATA_ROOT`, overridable with `DASH_DEFAULT_PROJECT` / `--project`). Auth
+via `--secret-config` / `DASH_SECRET_CONFIG` is required.
 
 ### Recommended project folder layout
 
@@ -62,18 +58,18 @@ columns start immediately after the `geneLength` column.
 Must join to expression sample IDs via the configured sample-ID column
 (default `fileName`). Remaining columns are used as metadata information for the analysis.
 
-**Locus lookup** (`locusMapping/`) — CSV with one row per gene
-Biocyc IDs can be used for Celov
-export (resulting txt files can be imported in the biocyc metabolic map as single omics file, this also works for old locus tags/gene names, but the mapping might be less complete). Additional columns might include information on the (GO) pathways these genes are included.
+**Locus lookup** (`locusMapping/`) — CSV with one row per gene.
+Additional columns may include pathway / GO annotations used for gene marking
+and hover metadata in the viewer.
 
 
 ### PCA
 
 Full PCA on the unscaled count/normalized matrix.
-Choose which PCs to plot (X/Y, optional Z), scree plot (top 10 PCs), optional split aesthetics on a certain column and change olor, shape and size based on different columns.
-Celov export for PC weighed genes to find up-/downregulated pathways for this PC in the biocyc viewer.
+Choose which PCs to plot (X/Y, optional Z), scree plot (top 10 PCs), optional split aesthetics on a certain column and change color, shape and size based on different columns.
+Top weighed genes for a chosen PC are listed in a table.
 
-Additional option to run linear classification to separate LC from biofilm conditions. If the two can be separated for relatively low dimensions this means that the variance across LC conditions covers biological variance different from that of biofilms. Celov export for genes weighed according to the linear classifier shows up-/downregulated pathways forbiofilm vs LC.
+Additional option to run linear classification to separate LC from biofilm conditions. If the two can be separated for relatively low dimensions this means that the variance across LC conditions covers biological variance different from that of biofilms. Top classifier genes are listed for the chosen number of PCs.
 
 ### UMAP
 
@@ -97,14 +93,12 @@ Same aesthetic / split-by controls as PCA.
 **PCA + dendrogram** (samples × samples tab)
 - PC X/Y/(optional Z) scatter colored by cluster; dendrogram with cluster leaf selection.
 - Assign clicked clusters to **Bin A** / **Bin B** (any number of clusters per bin).
-- Export sample metadata with column `maxclust :{t}` (below the heatmap).
 
 **Cluster contrast volcano**
 - Welch t-test + FDR; difference via **means** or **medians** between bins (data is assumed to be already transformed into fold changes).
 - Thresholds for −log10(padj) and |fold change| highlight points and place dashed lines.
 - After Run: mark genes by locus-lookup **column** + **entry** (cells may list several tokens separated by `;`).
 - Click a gene on the volcano for locus-lookup metadata (table on the right).
-- Celov export (score: expression difference, −log10(padj), or product; genes: up / down / up&down / all).
 
 ### Gene gradients
 
@@ -120,15 +114,8 @@ Per-gene correlation of expression vs ordered metadata levels
 - After Run: mark genes by locus-lookup column + entry (`;`-separated tokens) on all correlation and pairwise plots.
 - Pairwise coefficient plots: two side-by-side, optional third below; locus-lookup **gene metadata**
   table to the right (updated when you click a gene on a correlation or pairwise plot).
-- Click genes on gradient/pairwise plots for expression-vs-level profiles (below Celov;
-  up to 6 per row, 6 rows). Click again to remove; Clear selected genes to reset.
-- Celov export of a chosen score (+ dynamic range), up / down / up&down / all.
-
-### Filter count matrix
-
-Filters the active dataset on **samples** (sample metadata) or **genes** (dataset
-locus lookup: geneID ↔ locusTag). Register expression, metadata, and locus lookup
-per dataset; metadata/locus fields autofill from existing registrations. ATTENTION: CLR transformation depends on the geometric mean of the WHOLE dataset. The absolute values of a filtered CLR transformed dataset should always be read wrt original full data, relative distances are unaffected since the CLR transformation is an isometry for $S^D\rightarrow \mathrm{R}^D$.
+- Click genes on gradient/pairwise plots for expression-vs-level profiles
+  (up to 6 per row, 6 rows). Click again to remove; Clear selected genes to reset.
 
 ### Condition prediction *(placeholder)*
 
@@ -140,14 +127,14 @@ Tab is a stub for now — see the in-app description.
 
 Welch + BH volcano from Python-like metadata filters (`'column' in […]`,
 `'column' <= value`, `&` `|` `~`). Samples PCA colored Bin A / Bin B / overlap /
-rest; click volcano points for gene metadata. Celov when writable.
+rest; click volcano points for gene metadata.
 
 ### Parallel conditions
 
 Per-level Ward vs all non-subset samples; closest / unique-closest LC.
 PCA per level: closest α=1 styled by metadata color/shape/size columns; other
-points α=0.2. Genes: pooled gradients + profiles (Celov when writable). No
-condition enrichment on this branch.
+points α=0.2. Genes: pooled gradients + profiles. No condition enrichment on
+this branch.
 
 ### Gene → PCA
 
@@ -160,7 +147,8 @@ Classifier performance plot includes per-PC class end-split ARI (right axis).
 Top PC / classifier genes are listed in tables for reading into Gene → PCA.
 
 ### Gene enrichment *(placeholder)*
-Planned: whereever there is the celov option, write own pathway enrichment code/use other enrichment tools
+Planned: pathway enrichment from scored gene tables (replacing offline Celov
+exports) and/or other enrichment tools.
 
 ### Install
 
@@ -170,20 +158,14 @@ pip install -r requirements.txt
 
 ### Run
 
-Read-only (default on this branch — auth required):
+Auth required:
 
 ```bash
 python -m src.GUI.app --secret-config path/to/secret.toml
-# or gunicorn (forced readonly):
-#   DASH_SECRET_CONFIG=... gunicorn src.GUI.wsgi:server -b :8052
+# or gunicorn:
+#   DASH_SECRET_CONFIG=... gunicorn src.GUI.wsgi:server -b 127.0.0.1:8052
 ```
 
-Writable desktop (explicit opt-in only; do not use on the lab VM):
-
-```bash
-python -m src.GUI.app --writable --project path/to/your/project
-```
-
-Env knobs: `DASH_READONLY`, `DASH_WRITABLE`, `DASH_DEFAULT_PROJECT` /
-`DASH_DATA_ROOT`, `DASH_URL_BASE_PATHNAME`, `DASH_SECRET_CONFIG`. See
-`src/GUI/runtime.py`, `src/GUI/wsgi.py`, and [deploy/README.md](deploy/README.md).
+Env knobs: `DASH_DEFAULT_PROJECT` / `DASH_DATA_ROOT`, `DASH_URL_BASE_PATHNAME`,
+`DASH_SECRET_CONFIG`. See `src/GUI/runtime.py`, `src/GUI/wsgi.py`, and
+[deploy/README.md](deploy/README.md).
