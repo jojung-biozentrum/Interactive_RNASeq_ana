@@ -50,32 +50,69 @@ def locus_mark_columns(lookup: pd.DataFrame | None) -> list[str]:
     return [str(c) for c in lookup.columns]
 
 
-def filter_ids_by_search(
-    ids,
+def gene_search_options(
+    gene_ids,
     search,
     selected,
     *,
-    labels: dict[str, str] | None = None,
+    lookup: pd.DataFrame | None = None,
     limit: int = 80,
-) -> list[str]:
-    """Keep current selections plus up to ``limit`` search hits (2+ characters)."""
-    id_list = [str(x) for x in ids]
+) -> list[dict]:
+    """Dropdown options: keep selection, add hits on geneID / all locus columns."""
+    id_list = [str(x) for x in gene_ids]
     have = set(id_list)
-    keep = [str(x) for x in (selected or []) if x and str(x) in have]
+    chosen = [str(x) for x in (selected or []) if x and str(x) in have]
+    opts = [{"label": g, "value": g} for g in chosen]
     q = (search or "").strip().lower()
     if len(q) < 2:
-        return keep
-    extra: list[str] = []
-    labels = labels or {}
-    kept = set(keep)
+        return opts
+    seen = set(chosen)
+    id_col = None
+    if lookup is not None and not lookup.empty:
+        if "geneID" in lookup.columns:
+            id_col = "geneID"
+        elif "locusTag" in lookup.columns:
+            id_col = "locusTag"
+    if id_col is not None and lookup is not None:
+        for _, row in lookup.iterrows():
+            gid = str(row.get(id_col, "") or "")
+            if not gid or gid not in have or gid in seen:
+                continue
+            pieces = [gid]
+            for c in lookup.columns:
+                val = row.get(c)
+                if val is None or (isinstance(val, float) and pd.isna(val)):
+                    continue
+                text = str(val).strip()
+                if text:
+                    pieces.append(text)
+            if q not in " ".join(pieces).lower():
+                continue
+            # Prefer a short gene name in the label when available.
+            display = None
+            for c in GENE_HOVER_COLUMNS:
+                if c in lookup.columns:
+                    raw = row.get(c)
+                    if raw is None or (isinstance(raw, float) and pd.isna(raw)):
+                        continue
+                    tok = split_meta_tokens(raw)
+                    if tok:
+                        display = tok[0]
+                        break
+            label = f"{display} ({gid})" if display and display != gid else gid
+            opts.append({"label": label, "value": gid})
+            seen.add(gid)
+            if len(opts) >= limit:
+                return opts
     for gid in id_list:
-        if gid in kept:
+        if gid in seen:
             continue
-        if q in gid.lower() or q in str(labels.get(gid, "")).lower():
-            extra.append(gid)
-        if len(extra) >= limit:
+        if q in gid.lower():
+            opts.append({"label": gid, "value": gid})
+            seen.add(gid)
+        if len(opts) >= limit:
             break
-    return keep + extra
+    return opts
 
 
 def gene_meta_hover_map(
@@ -263,6 +300,53 @@ def mark_legend_banner(n_mark: int, mark_label: str | None) -> "html.Div | html.
     )
 
 
+def parse_gene_ids(text: str | None) -> list[str]:
+    """Split pasted geneIDs (space / comma / semicolon / newline — PCA Top genes form)."""
+    if not text or not str(text).strip():
+        return []
+    parts = re.split(r"[\s,;]+", str(text).strip())
+    out: list[str] = []
+    seen: set[str] = set()
+    for p in parts:
+        gid = str(p).strip()
+        if not gid or gid in seen:
+            continue
+        seen.add(gid)
+        out.append(gid)
+    return out
+
+
+def merge_gene_selection(
+    current,
+    *,
+    add: list[str] | None = None,
+    toggle: str | None = None,
+    clear: bool = False,
+    max_n: int | None = None,
+) -> list[str]:
+    """Update a multi-select gene list (add / toggle / clear), optionally capped."""
+    if clear:
+        return []
+    selected = [str(g) for g in (current or []) if g]
+    if toggle:
+        gene = str(toggle)
+        if gene in selected:
+            selected = [g for g in selected if g != gene]
+        else:
+            selected = selected + [gene]
+    if add:
+        have = set(selected)
+        for gid in add:
+            g = str(gid)
+            if not g or g in have:
+                continue
+            selected.append(g)
+            have.add(g)
+    if max_n is not None:
+        selected = selected[: int(max_n)]
+    return selected
+
+
 def mark_controls(
     *,
     col_id: str,
@@ -317,3 +401,89 @@ def mark_controls(
     if wrap_id:
         return html.Div(body, id=wrap_id, style={"display": "none"})
     return html.Div(body)
+
+
+def gene_pick_controls(
+    *,
+    search_id: str,
+    clear_id: str,
+    paste_id: str,
+    paste_btn_id: str,
+    label: str = "Search / pick genes",
+    help_text: str | None = None,
+) -> "html.Div":
+    """Compact search + paste + clear for marking / profiling specific genes."""
+    from dash import dcc, html
+    import dash_bootstrap_components as dbc
+
+    help_line = help_text or (
+        "Type 2+ characters (geneID / locus name), paste IDs from PCA Top genes, "
+        "or click points on the plot."
+    )
+    return html.Div(
+        [
+            html.P(help_line, className="text-muted small mb-1"),
+            dbc.Row(
+                [
+                    dbc.Col(
+                        [
+                            html.Label(label, className="small mb-0"),
+                            dcc.Dropdown(
+                                id=search_id,
+                                multi=True,
+                                searchable=True,
+                                placeholder="Type 2+ characters…",
+                            ),
+                        ],
+                        md=7,
+                    ),
+                    dbc.Col(
+                        [
+                            html.Label("\u00a0", className="small mb-0"),
+                            dbc.Button(
+                                "Clear",
+                                id=clear_id,
+                                color="secondary",
+                                outline=True,
+                                size="sm",
+                                className="w-100",
+                            ),
+                        ],
+                        md=2,
+                        className="d-flex flex-column justify-content-end",
+                    ),
+                ],
+                className="g-2 mb-1",
+            ),
+            dbc.Row(
+                [
+                    dbc.Col(
+                        dcc.Textarea(
+                            id=paste_id,
+                            placeholder="Paste geneIDs (space / comma / newline)…",
+                            style={
+                                "width": "100%",
+                                "height": "52px",
+                                "fontFamily": "monospace",
+                                "fontSize": "12px",
+                            },
+                        ),
+                        md=7,
+                    ),
+                    dbc.Col(
+                        dbc.Button(
+                            "Add pasted IDs",
+                            id=paste_btn_id,
+                            color="secondary",
+                            outline=True,
+                            size="sm",
+                            className="w-100",
+                        ),
+                        md=2,
+                        className="d-flex align-items-center",
+                    ),
+                ],
+                className="g-2 mb-2",
+            ),
+        ]
+    )

@@ -22,10 +22,14 @@ from ..components.controls import (
 from ..components.gene_meta_mark import (
     entry_dropdown_options,
     gene_meta_hover_map,
+    gene_pick_controls,
+    gene_search_options,
     genes_with_meta_entry,
     locus_mark_columns,
     mark_controls,
     mark_legend_banner,
+    merge_gene_selection,
+    parse_gene_ids,
 )
 from ..components.sample_detail import (
     gene_detail_placeholder,
@@ -764,6 +768,17 @@ class VolcanoConditionModule:
                 ),
                 html.Div(id="vc-status", className="mb-2"),
                 mark_controls(col_id="vc-mark-col", entry_id="vc-mark-entry", wrap_id="vc-mark-wrap"),
+                gene_pick_controls(
+                    search_id="vc-gene-search",
+                    clear_id="vc-gene-clear",
+                    paste_id="vc-gene-paste",
+                    paste_btn_id="vc-gene-paste-add",
+                    label="Search / mark genes",
+                    help_text=(
+                        "Search geneID / locus name, paste IDs from PCA Top genes, "
+                        "or click a volcano point to toggle mark."
+                    ),
+                ),
                 html.Div(id="vc-mark-legend", children=mark_legend_banner(0, None)),
                 dcc.Loading(
                     dbc.Row(
@@ -999,20 +1014,82 @@ class VolcanoConditionModule:
             )
 
         @app.callback(
+            Output("vc-gene-search", "options"),
+            Input("vc-cache", "data"),
+            Input("vc-gene-search", "search_value"),
+            Input("vc-gene-search", "value"),
+        )
+        def _gene_search_opts(_cache, search, selected):
+            results = _VC_RUNTIME.get("results")
+            if results is None or not isinstance(results, pd.DataFrame) or results.empty:
+                return []
+            return gene_search_options(
+                results["geneID"].astype(str),
+                search,
+                selected,
+                lookup=_VC_RUNTIME.get("locus_lookup"),
+            )
+
+        @app.callback(
+            Output("vc-gene-search", "value"),
+            Output("vc-gene-paste", "value"),
+            Output("vc-last-gene", "data", allow_duplicate=True),
+            Input("vc-gene-clear", "n_clicks"),
+            Input("vc-gene-paste-add", "n_clicks"),
+            Input("vc-fig", "clickData"),
+            State("vc-gene-search", "value"),
+            State("vc-gene-paste", "value"),
+            prevent_initial_call=True,
+        )
+        def _pick_genes(n_clear, n_paste, click, selected, paste_text):
+            triggered = callback_context.triggered_id
+            results = _VC_RUNTIME.get("results")
+            have = (
+                set(results["geneID"].astype(str))
+                if isinstance(results, pd.DataFrame) and not results.empty
+                else set()
+            )
+            if triggered == "vc-gene-clear":
+                return [], "", no_update
+            if triggered == "vc-gene-paste-add":
+                add = [g for g in parse_gene_ids(paste_text) if not have or g in have]
+                return merge_gene_selection(selected, add=add), "", no_update
+            if triggered == "vc-fig" and click:
+                raw = click["points"][0].get("customdata")
+                if isinstance(raw, (list, tuple)):
+                    raw = raw[0] if raw else None
+                if raw is None:
+                    return no_update, no_update, no_update
+                gene = str(raw)
+                return (
+                    merge_gene_selection(selected, toggle=gene),
+                    no_update,
+                    gene,
+                )
+            return no_update, no_update, no_update
+
+        @app.callback(
             Output("vc-fig", "figure", allow_duplicate=True),
             Output("vc-mark-legend", "children"),
             Input("vc-mark-col", "value"),
             Input("vc-mark-entry", "value"),
+            Input("vc-gene-search", "value"),
             prevent_initial_call=True,
         )
-        def _replot_marks(mark_col, mark_entry):
+        def _replot_marks(mark_col, mark_entry, searched):
             results = _VC_RUNTIME.get("results")
             meta = _VC_RUNTIME.get("plot_meta")
             if results is None or not meta:
                 return no_update, no_update
             lookup = _VC_RUNTIME.get("locus_lookup")
             mark_genes = genes_with_meta_entry(lookup, mark_col, mark_entry)
-            mark_label = f"{mark_col}={mark_entry}" if mark_col and mark_entry else None
+            mark_genes |= {str(g) for g in (searched or []) if g}
+            parts = []
+            if mark_col and mark_entry:
+                parts.append(f"{mark_col}={mark_entry}")
+            if searched:
+                parts.append(f"{len(searched)} searched")
+            mark_label = " + ".join(parts) if parts else None
             fig, n_mark = volcano_fig_from_results(
                 results,
                 title=_plotly_title(meta.get("title", "Volcano")),
@@ -1022,7 +1099,10 @@ class VolcanoConditionModule:
                 mark_label=mark_label,
                 hover_map=gene_meta_hover_map(lookup),
             )
-            return fig, mark_legend_banner(n_mark, mark_entry)
+            banner = mark_entry if mark_entry else (
+                f"{len(searched)} gene(s)" if searched else None
+            )
+            return fig, mark_legend_banner(n_mark, banner)
 
         @app.callback(
             Output("vc-mark-entry", "options"),
@@ -1035,18 +1115,6 @@ class VolcanoConditionModule:
             lookup = _VC_RUNTIME.get("locus_lookup")
             opts = entry_dropdown_options(lookup, col) if col else []
             return opts, None, not bool(opts), "entry" if opts else "choose a column"
-
-        @app.callback(
-            Output("vc-last-gene", "data"),
-            Input("vc-fig", "clickData"),
-        )
-        def _click(click):
-            if not click:
-                return no_update
-            raw = click["points"][0].get("customdata")
-            if isinstance(raw, (list, tuple)):
-                raw = raw[0] if raw else None
-            return str(raw) if raw is not None else no_update
 
         @app.callback(
             Output("vc-gene-detail", "children"),

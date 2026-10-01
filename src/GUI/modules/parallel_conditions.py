@@ -35,7 +35,14 @@ from ..components.sample_detail import (
     sample_detail_placeholder,
     sample_detail_table,
 )
-from ..components.gene_meta_mark import filter_ids_by_search, gene_hover_text, gene_meta_hover_map
+from ..components.gene_meta_mark import (
+    gene_hover_text,
+    gene_meta_hover_map,
+    gene_pick_controls,
+    gene_search_options,
+    merge_gene_selection,
+    parse_gene_ids,
+)
 from ..data_store import session_from_store
 from .clustering import (
     _locus_path_from_session,
@@ -1078,9 +1085,9 @@ class ParallelConditionsModule:
             [
                 html.H6("Pooled gene gradients"),
                 html.P(
-                    "Run on closest samples, then click a gene or pick IDs below for "
-                    "profiles. Pearson / Spearman vs dynamic range, and levels (x) vs "
-                    "closest (y).",
+                    "Run on closest samples, then search / paste / click genes for "
+                    "marking + profiles. Pearson / Spearman vs dynamic range, and "
+                    "levels (x) vs closest (y).",
                     className="text-muted small",
                 ),
                 dbc.Button(
@@ -1090,6 +1097,18 @@ class ParallelConditionsModule:
                     className="mb-2",
                 ),
                 html.Div(id="par-grad-status", className="text-muted small mb-2"),
+                gene_pick_controls(
+                    search_id="par-grad-genes",
+                    clear_id="par-grad-clear",
+                    paste_id="par-grad-gene-paste",
+                    paste_btn_id="par-grad-gene-paste-add",
+                    label="Search / pick genes",
+                    help_text=(
+                        "Search, paste PCA geneIDs, or click plots "
+                        f"(max {_MAX_PROFILE_GENES} for profiles)."
+                    ),
+                ),
+                html.Div(id="par-grad-profiles-status", className="text-muted small mb-1"),
                 dbc.Row(
                     [
                         dbc.Col(
@@ -1216,41 +1235,16 @@ class ParallelConditionsModule:
                     [
                         dbc.Col(
                             [
-                                html.Label("Selected genes"),
-                                dcc.Dropdown(
-                                    id="par-grad-genes",
-                                    multi=True,
-                                    placeholder="Type 2+ characters to search genes…",
-                                ),
-                            ],
-                            md=6,
-                        ),
-                        dbc.Col(
-                            [
                                 html.Label(
                                     "Replicate column for subset of interest (optional)"
                                 ),
                                 dcc.Dropdown(id="par-grad-rep-col", clearable=True),
                             ],
-                            md=3,
-                        ),
-                        dbc.Col(
-                            [
-                                html.Br(),
-                                dbc.Button(
-                                    "Clear selected genes",
-                                    id="par-grad-clear",
-                                    color="secondary",
-                                    outline=True,
-                                    size="sm",
-                                ),
-                            ],
-                            md=3,
+                            md=4,
                         ),
                     ],
                     className="g-2 mb-2",
                 ),
-                html.Div(id="par-grad-profiles-status", className="text-muted small mb-1"),
                 dcc.Graph(
                     id="par-grad-profiles",
                     figure={},
@@ -1691,8 +1685,12 @@ class ParallelConditionsModule:
             if not cache or results is None or results.empty:
                 return []
             chosen = list(selected or []) + list(clicked or [])
-            hits = filter_ids_by_search(results["geneID"].astype(str), search, chosen)
-            return [{"label": g, "value": g} for g in hits]
+            return gene_search_options(
+                results["geneID"].astype(str),
+                search,
+                chosen,
+                lookup=_PAR_RUNTIME.get("locus_lookup"),
+            )
 
         @app.callback(
             Output("par-grad-pearson", "figure"),
@@ -1768,26 +1766,49 @@ class ParallelConditionsModule:
         @app.callback(
             Output("par-grad-selected", "data"),
             Output("par-grad-genes", "value"),
+            Output("par-grad-gene-paste", "value"),
             Output("par-grad-profiles-status", "children"),
             Input("par-grad-pearson", "clickData"),
             Input("par-grad-spearman", "clickData"),
             Input("par-grad-cmp-pearson", "clickData"),
             Input("par-grad-cmp-spearman", "clickData"),
             Input("par-grad-clear", "n_clicks"),
+            Input("par-grad-gene-paste-add", "n_clicks"),
             Input("par-grad-genes", "value"),
             State("par-grad-selected", "data"),
+            State("par-grad-gene-paste", "value"),
             prevent_initial_call=True,
         )
         def _select_par_genes(
-            click_p, click_s, click_cp, click_cs, n_clear, dropdown, selected
+            click_p,
+            click_s,
+            click_cp,
+            click_cs,
+            n_clear,
+            n_paste,
+            dropdown,
+            selected,
+            paste_text,
         ):
             triggered = callback_context.triggered_id
             selected = list(selected or [])
             if triggered == "par-grad-clear":
-                return [], [], "Cleared selected genes."
+                return [], [], "", "Cleared selected genes."
+            if triggered == "par-grad-gene-paste-add":
+                results = _PAR_RUNTIME.get("grad_results")
+                have = (
+                    set(results["geneID"].astype(str))
+                    if isinstance(results, pd.DataFrame) and not results.empty
+                    else set()
+                )
+                add = [g for g in parse_gene_ids(paste_text) if not have or g in have]
+                genes = merge_gene_selection(
+                    selected, add=add, max_n=_MAX_PROFILE_GENES
+                )
+                return genes, genes, "", f"Profiles {len(genes)}/{_MAX_PROFILE_GENES}."
             if triggered == "par-grad-genes":
                 genes = [str(g) for g in (dropdown or [])][:_MAX_PROFILE_GENES]
-                return genes, no_update, f"Profiles {len(genes)}/{_MAX_PROFILE_GENES}."
+                return genes, genes, no_update, f"Profiles {len(genes)}/{_MAX_PROFILE_GENES}."
             click_map = {
                 "par-grad-pearson": click_p,
                 "par-grad-spearman": click_s,
@@ -1796,7 +1817,7 @@ class ParallelConditionsModule:
             }
             gene = _click_gene_id(click_map.get(triggered)) if isinstance(triggered, str) else None
             if not gene:
-                return no_update, no_update, no_update
+                return no_update, no_update, no_update, no_update
             if gene in selected:
                 selected = [g for g in selected if g != gene]
                 msg = f"Removed {gene} ({len(selected)}/{_MAX_PROFILE_GENES})."
@@ -1804,12 +1825,13 @@ class ParallelConditionsModule:
                 return (
                     no_update,
                     no_update,
+                    no_update,
                     f"Already at max {_MAX_PROFILE_GENES} profiles — remove one or Clear.",
                 )
             else:
                 selected = selected + [gene]
                 msg = f"Profiles {len(selected)}/{_MAX_PROFILE_GENES}."
-            return selected, selected, msg
+            return selected, selected, no_update, msg
 
         @app.callback(
             Output("par-grad-profiles", "figure"),

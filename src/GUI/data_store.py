@@ -1,4 +1,9 @@
-"""In-memory session: load/merge selected datasets into expression + metadata."""
+"""In-memory session: load/merge selected datasets into expression + metadata.
+
+Expression matrices stay on the server (process cache + reload-from-disk).
+``dcc.Store`` only carries metadata / gene IDs so large datasets (e.g.
+NEB_KazukiRef ~115 MB as JSON) are not pushed through the browser/nginx.
+"""
 
 from __future__ import annotations
 
@@ -11,6 +16,11 @@ import pandas as pd
 from .project import DatasetEntry, Project
 
 _GENE_LENGTH_MARKERS = ("geneLength", "gene_length", "GeneLength")
+
+# Process-local cache: expression is too large for dcc.Store round-trips.
+# Key = (project_root, active dataset names). Gunicorn multi-worker: each
+# worker may miss and reload from disk via project_root in the store blob.
+_SESSION_CACHE: dict[tuple[str, tuple[str, ...]], "SessionData"] = {}
 
 
 def _csv_sep(path: Path) -> str:
@@ -157,49 +167,97 @@ class SessionData:
         return list(self.metadata.columns)
 
 
-def session_to_store(session: SessionData) -> dict:
-    """Serialize session for Dash dcc.Store (keeps matrices as records)."""
+def _cache_key(project_root: str, names: list[str]) -> tuple[str, tuple[str, ...]]:
+    return (str(project_root), tuple(names))
+
+
+def cache_session(project_root: str, session: SessionData) -> None:
+    if project_root and session.ready:
+        _SESSION_CACHE[_cache_key(project_root, session.active_datasets)] = session
+
+
+def _meta_for_store(meta: pd.DataFrame) -> dict:
+    """Serialize metadata with NaN/Inf → None (JSON-safe)."""
+    out = meta.copy()
+    out.insert(0, "_sample_id", out.index.astype(str))
+    out = out.astype(object).where(pd.notna(out), None)
+    return out.to_dict(orient="list")
+
+
+def session_to_store(session: SessionData, *, project_root: str | None = None) -> dict:
+    """Serialize a light session for Dash ``dcc.Store`` (no expression matrix)."""
     if not session.ready:
         return {
             "ready": False,
             "error": session.error,
             "active_datasets": session.active_datasets,
             "meta_columns": [],
+            "project_root": project_root,
         }
     assert session.expression is not None and session.metadata is not None
-    meta = session.metadata.copy()
-    meta.insert(0, "_sample_id", meta.index.astype(str))
+    if project_root:
+        cache_session(project_root, session)
     return {
         "ready": True,
         "error": None,
+        "project_root": project_root,
         "active_datasets": session.active_datasets,
         "meta_columns": session.meta_columns(),
-        "expression": {
-            "index": list(session.expression.index.astype(str)),
-            "columns": list(session.expression.columns.astype(str)),
-            "data": session.expression.to_numpy().tolist(),
-        },
-        "metadata": meta.to_dict(orient="list"),
+        "gene_ids": list(session.expression.columns.astype(str)),
+        "n_samples": int(session.expression.shape[0]),
+        "metadata": _meta_for_store(session.metadata),
     }
+
+
+def _expression_from_legacy_blob(blob: dict) -> pd.DataFrame | None:
+    expr_blob = blob.get("expression")
+    if not expr_blob or "data" not in expr_blob:
+        return None
+    return pd.DataFrame(
+        expr_blob["data"],
+        index=expr_blob["index"],
+        columns=expr_blob["columns"],
+    )
+
+
+def _hydrate_expression(blob: dict, names: list[str]) -> pd.DataFrame | None:
+    """Prefer process cache; else reload from disk; else legacy embedded matrix."""
+    root = blob.get("project_root")
+    if root and names:
+        cached = _SESSION_CACHE.get(_cache_key(str(root), names))
+        if cached is not None and cached.expression is not None:
+            return cached.expression
+        try:
+            project = Project.load(str(root))
+            sess = load_selected(project, names)
+        except Exception:  # noqa: BLE001
+            sess = None
+        if sess is not None and sess.ready and sess.expression is not None:
+            cache_session(str(root), sess)
+            return sess.expression
+    return _expression_from_legacy_blob(blob)
 
 
 def session_from_store(blob: dict | None) -> SessionData:
     if not blob or not blob.get("ready"):
         return SessionData(error=(blob or {}).get("error") or "No session data.")
-    expr_blob = blob["expression"]
-    expression = pd.DataFrame(
-        expr_blob["data"],
-        index=expr_blob["index"],
-        columns=expr_blob["columns"],
-    )
+
+    names = list(blob.get("active_datasets", []))
     meta = pd.DataFrame(blob["metadata"])
     if "_sample_id" in meta.columns:
         meta = meta.set_index("_sample_id")
     meta.index = meta.index.astype(str)
+
+    expression = _hydrate_expression(blob, names)
+    if expression is None:
+        return SessionData(
+            error="Expression matrix unavailable (failed to reload from data folder).",
+            active_datasets=names,
+        )
     return SessionData(
         expression=expression,
         metadata=meta,
-        active_datasets=list(blob.get("active_datasets", [])),
+        active_datasets=names,
     )
 
 

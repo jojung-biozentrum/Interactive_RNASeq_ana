@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import math
-import re
 
-from dash import Dash, Input, Output, State, dcc, html, no_update
+from dash import Dash, Input, Output, State, callback_context, dcc, html, no_update
 import dash_bootstrap_components as dbc
 import numpy as np
 import pandas as pd
@@ -15,6 +14,7 @@ from plotly.subplots import make_subplots
 from src.biocyc.celov_multiomics_post import load_locus_lookup
 
 from ..components.controls import (
+    _coerce_symbol_3d,
     _marker_sizes,
     _point_symbols,
     aesthetic_options,
@@ -22,7 +22,13 @@ from ..components.controls import (
     graph_export_config,
     parse_aes_choice,
 )
-from ..components.gene_meta_mark import GENE_HOVER_COLUMNS
+from ..components.gene_meta_mark import (
+    GENE_HOVER_COLUMNS,
+    gene_pick_controls,
+    gene_search_options,
+    merge_gene_selection,
+    parse_gene_ids,
+)
 from ..components.sample_detail import (
     plot_with_sample_detail,
     register_sample_detail_callback,
@@ -50,22 +56,6 @@ def _gxp_fig_size(n_rows: int, n_cols: int, *, use_3d: bool = False) -> tuple[in
 def _plotly_title(*lines: str) -> dict:
     text = "<br>".join(x for x in lines if x is not None and str(x).strip() != "")
     return {"text": text, "x": 0.5, "xanchor": "center"}
-
-
-def _parse_gene_ids(text: str | None) -> list[str]:
-    """Split pasted geneIDs (same space-joined form as PCA Top genes)."""
-    if not text or not str(text).strip():
-        return []
-    parts = re.split(r"[\s,;]+", str(text).strip())
-    out: list[str] = []
-    seen: set[str] = set()
-    for p in parts:
-        gid = str(p).strip()
-        if not gid or gid in seen:
-            continue
-        seen.add(gid)
-        out.append(gid)
-    return out
 
 
 def _lookup_id_col(lookup: pd.DataFrame) -> str | None:
@@ -105,55 +95,6 @@ def _titles_for_genes(genes: list[str], lookup: pd.DataFrame | None) -> list[str
         if label and label != gid:
             by_id[gid] = f"{label} ({gid})"
     return [by_id.get(g, g) for g in genes]
-
-
-def _gene_pick_options(
-    expression: pd.DataFrame,
-    lookup: pd.DataFrame | None,
-    search: str | None,
-    selected,
-    *,
-    limit: int = _SEARCH_LIMIT,
-) -> list[dict]:
-    """Search geneID and all locus-lookup columns (2+ characters)."""
-    have = set(expression.columns.astype(str))
-    chosen = [str(x) for x in (selected or []) if str(x) in have]
-    opts = [{"label": g, "value": g} for g in chosen]
-    q = (search or "").strip().lower()
-    if len(q) < 2:
-        return opts
-    seen = set(chosen)
-    id_col = _lookup_id_col(lookup) if lookup is not None and not lookup.empty else None
-    if id_col is not None and lookup is not None:
-        for _, row in lookup.iterrows():
-            gid = str(row.get(id_col, "") or "")
-            if not gid or gid not in have or gid in seen:
-                continue
-            pieces = [gid]
-            for c in lookup.columns:
-                val = row.get(c)
-                if val is None or (isinstance(val, float) and pd.isna(val)):
-                    continue
-                text = str(val).strip()
-                if text:
-                    pieces.append(text)
-            if q not in " ".join(pieces).lower():
-                continue
-            display = _display_name_from_row(row)
-            label = f"{display} ({gid})" if display and display != gid else gid
-            opts.append({"label": label, "value": gid})
-            seen.add(gid)
-            if len(opts) >= limit:
-                return opts
-    for gid in expression.columns.astype(str):
-        if gid in seen:
-            continue
-        if q in gid.lower():
-            opts.append({"label": gid, "value": gid})
-            seen.add(gid)
-        if len(opts) >= limit:
-            break
-    return opts
 
 
 def _resolve_shape_size(shape, size, columns):
@@ -218,6 +159,12 @@ def _expr_pca_figure(
         symbols = _point_symbols(score_df[shape_col])
     else:
         symbols = shape_const or "circle"
+    if use_3d:
+        # Scatter3d only allows a short symbol list (no triangle-up, etc.).
+        if isinstance(symbols, (list, tuple, np.ndarray, pd.Series)):
+            symbols = [_coerce_symbol_3d(s) for s in symbols]
+        else:
+            symbols = _coerce_symbol_3d(symbols)
     if size_col and size_col in score_df.columns:
         sizes = _marker_sizes(score_df[size_col])
     else:
@@ -348,63 +295,19 @@ class GeneExprPCAModule:
         return html.Div(
             [
                 html.P(
-                    "Paste geneIDs from PCA Top genes, and/or search any locus-lookup "
-                    "column (geneID, names, …). Color is gene expression (viridis); "
-                    "shape / size can use metadata columns or fixed values.",
+                    "Color PCA panels by gene expression (viridis). "
+                    "Shape / size can use metadata columns or fixed values.",
                     className="text-muted small",
                 ),
-                dbc.Row(
-                    [
-                        dbc.Col(
-                            [
-                                html.Label("geneIDs (paste from PCA)"),
-                                dcc.Textarea(
-                                    id="gxp-gene-ids",
-                                    placeholder="e.g. PA0001 PA0002 …",
-                                    style={
-                                        "width": "100%",
-                                        "height": "72px",
-                                        "fontFamily": "monospace",
-                                        "fontSize": "12px",
-                                    },
-                                ),
-                            ],
-                            md=8,
-                        ),
-                        dbc.Col(
-                            [
-                                html.Label("\u00a0"),
-                                dbc.Button(
-                                    "Add pasted IDs to selection",
-                                    id="gxp-ids-add",
-                                    color="secondary",
-                                    outline=True,
-                                    size="sm",
-                                    className="w-100",
-                                ),
-                            ],
-                            md=4,
-                            className="d-flex flex-column justify-content-end",
-                        ),
-                    ],
-                    className="g-2 mb-2",
-                ),
-                dbc.Row(
-                    [
-                        dbc.Col(
-                            [
-                                html.Label("Search / pick (all locus columns)"),
-                                dcc.Dropdown(
-                                    id="gxp-gene-pick",
-                                    multi=True,
-                                    searchable=True,
-                                    placeholder="Type 2+ characters…",
-                                ),
-                            ],
-                            md=12,
-                        ),
-                    ],
-                    className="g-2 mb-2",
+                gene_pick_controls(
+                    search_id="gxp-gene-pick",
+                    clear_id="gxp-gene-clear",
+                    paste_id="gxp-gene-ids",
+                    paste_btn_id="gxp-ids-add",
+                    label="Search / pick genes",
+                    help_text=(
+                        "Search geneID / locus name, or paste IDs from PCA Top genes."
+                    ),
                 ),
                 dbc.Row(
                     [
@@ -494,42 +397,46 @@ class GeneExprPCAModule:
                     lookup = load_locus_lookup(path)
                 except Exception:  # noqa: BLE001
                     lookup = None
-            return _gene_pick_options(session.expression, lookup, search, selected)
+            return gene_search_options(
+                session.expression.columns.astype(str),
+                search,
+                selected,
+                lookup=lookup,
+                limit=_SEARCH_LIMIT,
+            )
 
         @app.callback(
             Output("gxp-gene-pick", "value"),
+            Output("gxp-gene-ids", "value"),
             Output("gxp-status", "children", allow_duplicate=True),
             Input("gxp-ids-add", "n_clicks"),
+            Input("gxp-gene-clear", "n_clicks"),
             State("gxp-gene-ids", "value"),
             State("gxp-gene-pick", "value"),
             State("session-store", "data"),
             prevent_initial_call=True,
         )
-        def _add_pasted_ids(n_clicks, paste_text, selected, session_blob):
+        def _add_or_clear(n_paste, n_clear, paste_text, selected, session_blob):
+            triggered = callback_context.triggered_id
+            if triggered == "gxp-gene-clear":
+                return [], "", "Cleared gene selection."
             session = session_from_store(session_blob)
             if not session.ready or session.expression is None:
-                return no_update, session.error or "Load a dataset first."
+                return no_update, no_update, session.error or "Load a dataset first."
             have = set(session.expression.columns.astype(str))
-            chosen = [str(x) for x in (selected or []) if str(x) in have]
-            pasted = _parse_gene_ids(paste_text)
+            pasted = parse_gene_ids(paste_text)
             if not pasted:
-                return no_update, "Paste geneIDs first (from PCA Top genes)."
-            added = 0
-            missing = []
-            for gid in pasted:
-                if gid in have:
-                    if gid not in chosen:
-                        chosen.append(gid)
-                        added += 1
-                else:
-                    missing.append(gid)
-            msg = f"Added {added} geneID(s); selection has {len(chosen)}."
+                return no_update, no_update, "Paste geneIDs first (from PCA Top genes)."
+            add = [g for g in pasted if g in have]
+            missing = [g for g in pasted if g not in have]
+            chosen = merge_gene_selection(selected, add=add)
+            msg = f"Added {len(add)} geneID(s); selection has {len(chosen)}."
             if missing:
                 msg += (
                     f" Not in matrix: {', '.join(missing[:5])}"
                     f"{'…' if len(missing) > 5 else ''}."
                 )
-            return chosen, msg
+            return chosen, "", msg
 
         @app.callback(
             Output("gxp-x", "options"),
@@ -540,9 +447,11 @@ class GeneExprPCAModule:
             Output("gxp-z", "value"),
             Input("gxp-cache", "data"),
             Input("pca-cache", "data"),
+            State("gxp-x", "value"),
+            State("gxp-y", "value"),
             State("gxp-z", "value"),
         )
-        def _axes(gxp_cache, pca_cache, z_cur):
+        def _axes(gxp_cache, pca_cache, x_cur, y_cur, z_cur):
             n = int((pca_cache or {}).get("n_pcs") or 0)
             if not n and "score_df" in _PCA_RUNTIME:
                 n = sum(
@@ -554,8 +463,10 @@ class GeneExprPCAModule:
                 n = int(gxp_cache.get("n_pcs") or 0)
             pcs = [f"PC{i}" for i in range(1, max(n, 2) + 1)]
             opts = [{"label": c, "value": c} for c in pcs]
+            x_val = x_cur if x_cur in pcs else "PC1"
+            y_val = y_cur if y_cur in pcs else ("PC2" if "PC2" in pcs else "PC1")
             z_val = z_cur if z_cur in pcs else None
-            return opts, opts, opts, "PC1", "PC2" if "PC2" in pcs else "PC1", z_val
+            return opts, opts, opts, x_val, y_val, z_val
 
         @app.callback(
             Output("gxp-shape", "options"),
@@ -608,14 +519,14 @@ class GeneExprPCAModule:
                 return empty, style, session.error or "Load a dataset first.", no_update
             have = set(session.expression.columns.astype(str))
             genes = []
-            for gid in list(picked or []) + _parse_gene_ids(paste_text):
+            for gid in list(picked or []) + parse_gene_ids(paste_text):
                 gid = str(gid)
                 if gid in have and gid not in genes:
                     genes.append(gid)
             if not genes and gxp_cache and gxp_cache.get("genes"):
                 genes = [g for g in gxp_cache["genes"] if g in have]
             if not genes:
-                missing = [g for g in _parse_gene_ids(paste_text) if g not in have]
+                missing = [g for g in parse_gene_ids(paste_text) if g not in have]
                 if missing:
                     return (
                         empty,

@@ -21,10 +21,14 @@ from ..components.controls import (
 from ..components.gene_meta_mark import (
     entry_dropdown_options,
     gene_meta_hover_map,
+    gene_pick_controls,
+    gene_search_options,
     genes_with_meta_entry,
     locus_mark_columns,
     mark_controls,
     mark_legend_banner,
+    merge_gene_selection,
+    parse_gene_ids,
 )
 from ..components.sample_detail import (
     gene_detail_placeholder,
@@ -811,6 +815,17 @@ class ClusteringModule:
                             entry_id="hc-volcano-mark-entry",
                             wrap_id="hc-volcano-mark-wrap",
                         ),
+                        gene_pick_controls(
+                            search_id="hc-volcano-gene-search",
+                            clear_id="hc-volcano-gene-clear",
+                            paste_id="hc-volcano-gene-paste",
+                            paste_btn_id="hc-volcano-gene-paste-add",
+                            label="Search / mark genes",
+                            help_text=(
+                                "Search geneID / locus name, paste IDs from PCA Top genes, "
+                                "or click a volcano point to toggle mark."
+                            ),
+                        ),
                         html.Div(
                             id="hc-volcano-mark-legend",
                             children=mark_legend_banner(0, None),
@@ -1402,13 +1417,69 @@ class ClusteringModule:
             )
 
         @app.callback(
+            Output("hc-volcano-gene-search", "options"),
+            Input("hc-cache", "data"),
+            Input("hc-volcano", "figure"),
+            Input("hc-volcano-gene-search", "search_value"),
+            Input("hc-volcano-gene-search", "value"),
+        )
+        def _hc_volcano_gene_opts(_cache, _fig, search, selected):
+            results = _HC_RUNTIME.get("volcano_results")
+            if results is None or not isinstance(results, pd.DataFrame) or results.empty:
+                return []
+            return gene_search_options(
+                results["geneID"].astype(str),
+                search,
+                selected,
+                lookup=_HC_RUNTIME.get("locus_lookup"),
+            )
+
+        @app.callback(
+            Output("hc-volcano-gene-search", "value"),
+            Output("hc-volcano-gene-paste", "value"),
+            Output("hc-volcano-last-gene", "data"),
+            Input("hc-volcano-gene-clear", "n_clicks"),
+            Input("hc-volcano-gene-paste-add", "n_clicks"),
+            Input("hc-volcano", "clickData"),
+            State("hc-volcano-gene-search", "value"),
+            State("hc-volcano-gene-paste", "value"),
+            prevent_initial_call=True,
+        )
+        def _hc_volcano_pick(n_clear, n_paste, click, selected, paste_text):
+            triggered = callback_context.triggered_id
+            results = _HC_RUNTIME.get("volcano_results")
+            have = (
+                set(results["geneID"].astype(str))
+                if isinstance(results, pd.DataFrame) and not results.empty
+                else set()
+            )
+            if triggered == "hc-volcano-gene-clear":
+                return [], "", no_update
+            if triggered == "hc-volcano-gene-paste-add":
+                add = [g for g in parse_gene_ids(paste_text) if not have or g in have]
+                return merge_gene_selection(selected, add=add), "", no_update
+            if triggered == "hc-volcano" and click and click.get("points"):
+                pt = click["points"][0]
+                raw = pt.get("customdata")
+                if isinstance(raw, (list, tuple)):
+                    raw = raw[0] if raw else None
+                if raw is None:
+                    raw = pt.get("text")
+                if raw is None:
+                    return no_update, no_update, no_update
+                gene = str(raw)
+                return merge_gene_selection(selected, toggle=gene), no_update, gene
+            return no_update, no_update, no_update
+
+        @app.callback(
             Output("hc-volcano", "figure", allow_duplicate=True),
             Output("hc-volcano-mark-legend", "children", allow_duplicate=True),
             Input("hc-volcano-mark-col", "value"),
             Input("hc-volcano-mark-entry", "value"),
+            Input("hc-volcano-gene-search", "value"),
             prevent_initial_call=True,
         )
-        def _replot_volcano_marks(mark_col, mark_entry):
+        def _replot_volcano_marks(mark_col, mark_entry, searched):
             results = _HC_RUNTIME.get("volcano_results")
             meta = _HC_RUNTIME.get("volcano_plot_meta")
             if results is None or not meta:
@@ -1416,7 +1487,13 @@ class ClusteringModule:
             mark_genes = genes_with_meta_entry(
                 _HC_RUNTIME.get("locus_lookup"), mark_col, mark_entry
             )
-            mark_label = f"{mark_col}={mark_entry}" if mark_col and mark_entry else None
+            mark_genes |= {str(g) for g in (searched or []) if g}
+            parts = []
+            if mark_col and mark_entry:
+                parts.append(f"{mark_col}={mark_entry}")
+            if searched:
+                parts.append(f"{len(searched)} searched")
+            mark_label = " + ".join(parts) if parts else None
             fig, n_mark = volcano_fig_from_results(
                 results,
                 title=meta["title"],
@@ -1427,7 +1504,10 @@ class ClusteringModule:
                 mark_label=mark_label,
                 hover_map=gene_meta_hover_map(_HC_RUNTIME.get("locus_lookup")),
             )
-            return fig, mark_legend_banner(n_mark, mark_label)
+            banner = mark_entry if mark_entry else (
+                f"{len(searched)} gene(s)" if searched else None
+            )
+            return fig, mark_legend_banner(n_mark, banner)
 
         @app.callback(
             Output("hc-volcano-mark-entry", "options"),
@@ -1441,22 +1521,6 @@ class ClusteringModule:
                 return [], None, True, "Select a column first…"
             opts = entry_dropdown_options(_HC_RUNTIME.get("locus_lookup"), col)
             return opts, None, False, "Entry…"
-
-        @app.callback(
-            Output("hc-volcano-last-gene", "data"),
-            Input("hc-volcano", "clickData"),
-            prevent_initial_call=True,
-        )
-        def _volcano_gene_click(click):
-            if not click or not click.get("points"):
-                return no_update
-            pt = click["points"][0]
-            raw = pt.get("customdata")
-            if isinstance(raw, (list, tuple)):
-                raw = raw[0] if raw else None
-            if raw is None:
-                raw = pt.get("text")
-            return str(raw) if raw is not None else no_update
 
         @app.callback(
             Output("hc-volcano-gene-detail", "children"),

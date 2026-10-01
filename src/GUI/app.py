@@ -151,7 +151,7 @@ def _register_core_callbacks(app: Dash) -> None:
             DatasetEntry.from_dict(d) for d in blob.get("datasets", project.datasets)
         ]
         session = load_selected(project, [name])
-        store = session_to_store(session)
+        store = session_to_store(session, project_root=blob["root"])
         if session.ready:
             msg = (
                 f"Loaded {session.expression.shape[0]} samples × "

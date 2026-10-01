@@ -21,9 +21,13 @@ from ..components.gene_meta_mark import (
     gene_hover_text,
     gene_mark_mask,
     gene_meta_hover_map,
+    gene_pick_controls,
+    gene_search_options,
     genes_with_meta_entry,
     locus_mark_columns,
     mark_controls,
+    merge_gene_selection,
+    parse_gene_ids,
 )
 from ..components.sample_detail import (
     gene_detail_placeholder,
@@ -701,6 +705,18 @@ class GeneGradientsModule:
                     entry_id="grad-mark-entry",
                     wrap_id="grad-mark-wrap",
                 ),
+                gene_pick_controls(
+                    search_id="grad-gene-search",
+                    clear_id="grad-profiles-clear",
+                    paste_id="grad-gene-paste",
+                    paste_btn_id="grad-gene-paste-add",
+                    label="Search / pick genes",
+                    help_text=(
+                        "Search, paste PCA geneIDs, or click plots to select genes for "
+                        f"marking + profiles (max {_MAX_PROFILE_GENES})."
+                    ),
+                ),
+                html.Div(id="grad-profiles-status", className="text-muted small mb-1"),
                 dcc.Loading(
                     html.Div(
                         [
@@ -775,22 +791,12 @@ class GeneGradientsModule:
                     type="default",
                 ),
                 html.Hr(),
-                html.H6("Clicked gene profiles"),
+                html.H6("Gene profiles"),
                 html.P(
-                    "Click a gene on any gradient or pairwise plot (click again to remove). "
-                    f"Up to {_PROFILE_COLS} per row, {_MAX_PROFILE_GENES // _PROFILE_COLS} rows "
-                    f"(max {_MAX_PROFILE_GENES}).",
+                    "Profiles for genes selected above "
+                    f"(up to {_PROFILE_COLS} per row, max {_MAX_PROFILE_GENES}).",
                     className="text-muted small",
                 ),
-                dbc.Button(
-                    "Clear selected genes",
-                    id="grad-profiles-clear",
-                    color="secondary",
-                    outline=True,
-                    size="sm",
-                    className="mb-2",
-                ),
-                html.Div(id="grad-profiles-status", className="text-muted small mb-1"),
                 dcc.Graph(id="grad-profiles-grid", figure={}, config=_GRAPH_CONFIG),
                 dcc.Store(id="grad-cache"),
                 dcc.Store(id="grad-selected-genes", data=[]),
@@ -1213,7 +1219,28 @@ class GeneGradientsModule:
             return opts, None, False, "Entry…"
 
         @app.callback(
+            Output("grad-gene-search", "options"),
+            Input("grad-cache", "data"),
+            Input("grad-gene-search", "search_value"),
+            Input("grad-gene-search", "value"),
+            Input("grad-selected-genes", "data"),
+        )
+        def _gene_search_opts(cache, search, dropdown, selected):
+            results = _GRAD_RUNTIME.get("results")
+            if results is None or not isinstance(results, pd.DataFrame) or results.empty:
+                return []
+            chosen = list(selected or []) + list(dropdown or [])
+            return gene_search_options(
+                results["geneID"].astype(str),
+                search,
+                chosen,
+                lookup=_GRAD_RUNTIME.get("locus_lookup"),
+            )
+
+        @app.callback(
             Output("grad-selected-genes", "data"),
+            Output("grad-gene-search", "value"),
+            Output("grad-gene-paste", "value"),
             Output("grad-last-gene", "data"),
             Output("grad-profiles-status", "children"),
             Input("grad-plot-pearson", "clickData"),
@@ -1223,7 +1250,10 @@ class GeneGradientsModule:
             Input("grad-pair-pk", "clickData"),
             Input("grad-pair-sk", "clickData"),
             Input("grad-profiles-clear", "n_clicks"),
+            Input("grad-gene-paste-add", "n_clicks"),
+            Input("grad-gene-search", "value"),
             State("grad-selected-genes", "data"),
+            State("grad-gene-paste", "value"),
             prevent_initial_call=True,
         )
         def _select_genes(
@@ -1234,12 +1264,42 @@ class GeneGradientsModule:
             click_pk,
             click_sk,
             n_clear,
+            n_paste,
+            dropdown,
             selected,
+            paste_text,
         ):
             triggered = callback_context.triggered_id
             selected = list(selected or [])
             if triggered == "grad-profiles-clear":
-                return [], None, "Cleared selected genes."
+                return [], [], "", None, "Cleared selected genes."
+            if triggered == "grad-gene-paste-add":
+                results = _GRAD_RUNTIME.get("results")
+                have = (
+                    set(results["geneID"].astype(str))
+                    if isinstance(results, pd.DataFrame) and not results.empty
+                    else set()
+                )
+                add = [g for g in parse_gene_ids(paste_text) if not have or g in have]
+                genes = merge_gene_selection(
+                    selected, add=add, max_n=_MAX_PROFILE_GENES
+                )
+                return (
+                    genes,
+                    genes,
+                    "",
+                    no_update,
+                    f"Profiles {len(genes)}/{_MAX_PROFILE_GENES}.",
+                )
+            if triggered == "grad-gene-search":
+                genes = [str(g) for g in (dropdown or [])][:_MAX_PROFILE_GENES]
+                return (
+                    genes,
+                    genes,
+                    no_update,
+                    no_update,
+                    f"Profiles {len(genes)}/{_MAX_PROFILE_GENES}.",
+                )
             click_map = {
                 "grad-plot-pearson": click_p,
                 "grad-plot-spearman": click_s,
@@ -1254,27 +1314,16 @@ class GeneGradientsModule:
                 else None
             )
             if not gene:
-                return no_update, no_update, no_update
-            # Metadata table always shows the gene just clicked (correlation / pairwise)
+                return no_update, no_update, no_update, no_update, no_update
             if gene in selected:
                 selected = [g for g in selected if g != gene]
-                return (
-                    selected,
-                    gene,
-                    f"Removed {gene} from profiles ({len(selected)}/{_MAX_PROFILE_GENES}).",
-                )
-            if len(selected) >= _MAX_PROFILE_GENES:
-                return (
-                    selected,
-                    gene,
-                    f"Already at max {_MAX_PROFILE_GENES} profiles — remove one or Clear.",
-                )
-            selected = selected + [gene]
-            return (
-                selected,
-                gene,
-                f"Profiles {len(selected)}/{_MAX_PROFILE_GENES}; metadata = {gene}.",
-            )
+                msg = f"Removed {gene} from profiles ({len(selected)}/{_MAX_PROFILE_GENES})."
+            elif len(selected) >= _MAX_PROFILE_GENES:
+                msg = f"Already at max {_MAX_PROFILE_GENES} profiles — remove one or Clear."
+            else:
+                selected = selected + [gene]
+                msg = f"Profiles {len(selected)}/{_MAX_PROFILE_GENES}; metadata = {gene}."
+            return selected, selected, no_update, gene, msg
 
         @app.callback(
             Output("grad-gene-detail", "children"),
