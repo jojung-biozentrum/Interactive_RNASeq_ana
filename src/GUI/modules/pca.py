@@ -13,8 +13,12 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from sklearn.decomposition import PCA
 
-from src.GUI.components.gene_scores import weighed_genes_from_pc
+from src.GUI.components.gene_scores import (
+    weighed_genes_from_classifier,
+    weighed_genes_from_pc,
+)
 from src.GUI.project import resolve_celov_id_col
+from .pc_ari import pc_separation_ari
 
 from ..components.controls import (
     EXPORT_H,
@@ -81,6 +85,43 @@ def _run_pca(session: SessionData):
 def _plotly_title(*lines: str) -> dict:
     text = "<br>".join(line for line in lines if line is not None and str(line).strip() != "")
     return {"text": text, "x": 0.5, "xanchor": "center"}
+
+
+def _top_weighed(weighed: pd.DataFrame, n) -> pd.DataFrame:
+    """Top N genes."""
+    try:
+        n = max(1, int(n))
+    except (TypeError, ValueError):
+        n = 30
+    return weighed.head(n)
+
+
+def _gene_weight_table(weighed: pd.DataFrame) -> html.Div:
+    if weighed is None or weighed.empty:
+        return html.P("No genes to show.", className="text-muted small mb-0")
+    show = weighed[["geneID", "gene_weight"]].copy()
+    header = [html.Th(c) for c in show.columns]
+    body = []
+    for _, row in show.iterrows():
+        body.append(
+            html.Tr(
+                [
+                    html.Td(str(row["geneID"]), className="text-nowrap"),
+                    html.Td(f"{float(row['gene_weight']):.4g}"),
+                ]
+            )
+        )
+    return html.Div(
+        dbc.Table(
+            [html.Thead(html.Tr(header)), html.Tbody(body)],
+            bordered=True,
+            striped=True,
+            size="sm",
+            className="mb-0",
+        ),
+        className="overflow-auto",
+        style={"maxHeight": "320px"},
+    )
 
 
 def _active_dataset_name(session_blob=None, active=None) -> str:
@@ -432,19 +473,43 @@ class PCAModule:
                     ),
                     type="default",
                 ),
+                html.Hr(),
+                html.H6("Top PC genes"),
+                html.P(
+                    "Pick a PC to list top weighed genes for that PCA.",
+                    className="text-muted small",
+                ),
+                dbc.Row(
+                    [
+                        dbc.Col(
+                            [
+                                html.Label("PC"),
+                                dcc.Dropdown(id="pca-weight-pc", placeholder="PC1", clearable=False),
+                            ],
+                            md=2,
+                        ),
+                        dbc.Col(
+                            [
+                                html.Label("Top N"),
+                                dbc.Input(
+                                    id="pca-weight-topn",
+                                    type="number",
+                                    value=30,
+                                    min=5,
+                                    step=1,
+                                ),
+                            ],
+                            md=2,
+                        ),
+                    ],
+                    className="g-2 mb-2",
+                ),
+                html.Div(id="pca-weight-table", className="mb-2"),
                 html.Div(
                     [
-                    html.Hr(),
                     html.H6("Save weighed genes (PC, Celov)"),
                     dbc.Row(
                         [
-                            dbc.Col(
-                                [
-                                    html.Label("PC"),
-                                    dcc.Dropdown(id="pca-weight-pc", placeholder="PC1", clearable=False),
-                                ],
-                                md=2,
-                            ),
                             dbc.Col(
                                 [
                                     html.Label("Locus lookup CSV (optional)"),
@@ -507,9 +572,9 @@ class PCAModule:
                 html.Hr(),
                 html.H6("Linear classifier"),
                 html.P(
-                    "Same as the notebook: sklearn LogisticRegression on PC scores → "
-                    "train accuracy and CV balanced accuracy vs number of PCs; optional "
-                    "2-PC decision boundary; Celov weighed-gene .txt export.",
+                    "sklearn LogisticRegression on PC scores → train / CV balanced "
+                    "accuracy vs number of PCs, plus per-PC ARI; "
+                    "optional 2-PC decision boundary.",
                     className="text-muted small",
                 ),
                 dbc.Row(
@@ -653,6 +718,30 @@ class PCAModule:
                     ],
                 ),
                 html.Div(id="pca-clf-status", className="text-muted small mb-2"),
+                html.H6("Top classifier genes", className="mt-3"),
+                html.P(
+                    "Uses “Genes: n PCs” above.",
+                    className="text-muted small",
+                ),
+                dbc.Row(
+                    [
+                        dbc.Col(
+                            [
+                                html.Label("Top N"),
+                                dbc.Input(
+                                    id="pca-clf-topn",
+                                    type="number",
+                                    value=30,
+                                    min=5,
+                                    step=1,
+                                ),
+                            ],
+                            md=2,
+                        ),
+                    ],
+                    className="g-2 mb-2",
+                ),
+                html.Div(id="pca-clf-gene-table", className="mb-2"),
                 html.Div(id="pca-status", className="text-muted small"),
                 dcc.Store(id="pca-cache"),
                 dcc.Store(id="pca-group-aes", data={}),
@@ -902,6 +991,11 @@ class PCAModule:
                 if not clf_cache or not clf_cache.get("perf"):
                     return no_update, no_update, no_update
                 perf = pd.DataFrame(clf_cache["perf"])
+                ari = (
+                    pd.DataFrame(clf_cache["ari"])
+                    if clf_cache.get("ari")
+                    else None
+                )
                 fig = performance_figure(
                     perf,
                     title=_plotly_title(
@@ -909,6 +1003,7 @@ class PCAModule:
                         f"split on {clf_cache.get('label_col')} "
                         f"(positive = {clf_cache.get('positive')})",
                     ),
+                    ari_df=ari,
                 )
                 return no_update, set_fig_size(fig, fig_w, fig_h), no_update
 
@@ -919,13 +1014,20 @@ class PCAModule:
             try:
                 score_df = _PCA_RUNTIME["score_df"]
                 y = encode_binary_labels(score_df[label_col], positive)
-                perf = classifier_performance(score_df, y, int(pc_min or 2), int(pc_max or 12))
+                n_lo = int(pc_min or 2)
+                n_hi = int(pc_max or 12)
+                perf = classifier_performance(score_df, y, n_lo, n_hi)
+                try:
+                    ari = pc_separation_ari(score_df, label_col, positive, n_hi)
+                except Exception:  # noqa: BLE001
+                    ari = None
                 fig = performance_figure(
                     perf,
                     title=_plotly_title(
                         f"Linear Classifier on PCs for {dataset}",
                         f"split on {label_col} (positive = {positive})",
                     ),
+                    ari_df=ari,
                 )
                 fig = set_fig_size(fig, fig_w, fig_h)
                 res2 = fit_pc_classifier(score_df, y, 2)
@@ -935,6 +1037,7 @@ class PCAModule:
                     "label_col": label_col,
                     "positive": str(positive),
                     "perf": perf.to_dict(orient="list") if perf is not None else {},
+                    "ari": ari.to_dict(orient="list") if ari is not None else {},
                     "w2": list(map(float, res2["w"])) if res2 else None,
                     "b2": float(res2["b"]) if res2 else None,
                     "cv2": float(res2["cv_acc"]) if res2 else None,
@@ -1046,6 +1149,50 @@ class PCAModule:
             cache_id="pca-cache",
             get_score_df=_score_frame_for_plot,
         )
+
+        @app.callback(
+            Output("pca-weight-table", "children"),
+            Input("pca-cache", "data"),
+            Input("pca-weight-pc", "value"),
+            Input("pca-weight-topn", "value"),
+        )
+        def _pc_gene_table(cache, pc, topn):
+            if not cache or "loadings" not in _PCA_RUNTIME or not pc:
+                return html.P(
+                    "Run PCA and choose a PC.",
+                    className="text-muted small mb-0",
+                )
+            try:
+                weighed = weighed_genes_from_pc(_PCA_RUNTIME["loadings"], str(pc))
+                return _gene_weight_table(_top_weighed(weighed, topn))
+            except Exception as exc:  # noqa: BLE001
+                return html.P(f"Could not list genes: {exc}", className="text-danger small mb-0")
+
+        @app.callback(
+            Output("pca-clf-gene-table", "children"),
+            Input("pca-clf-cache", "data"),
+            Input("pca-clf-topn", "value"),
+            Input("pca-clf-gene-pcs", "value"),
+        )
+        def _clf_gene_table(clf_cache, topn, gene_pcs):
+            if not clf_cache or not clf_cache.get("w_gene"):
+                return html.P(
+                    "Run the linear classifier first.",
+                    className="text-muted small mb-0",
+                )
+            if "loadings" not in _PCA_RUNTIME or "explained_variance" not in _PCA_RUNTIME:
+                return html.P("Run PCA first.", className="text-muted small mb-0")
+            try:
+                n_gene = int(gene_pcs or clf_cache.get("gene_pcs") or 5)
+                weighed = weighed_genes_from_classifier(
+                    _PCA_RUNTIME["loadings"],
+                    _PCA_RUNTIME["explained_variance"],
+                    clf_cache["w_gene"],
+                    n_gene,
+                )
+                return _gene_weight_table(_top_weighed(weighed, topn))
+            except Exception as exc:  # noqa: BLE001
+                return html.P(f"Could not list genes: {exc}", className="text-danger small mb-0")
 
         if readonly:
             return

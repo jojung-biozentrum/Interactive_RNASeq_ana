@@ -136,12 +136,28 @@ Planned: supervised ML (decision tree / related methods) to predict metadata
 conditions from the transcriptome, with train/test metrics and gene importances.
 Tab is a stub for now — see the in-app description.
 
-### Parallel conditions *(placeholder)*
+### Volcano by condition
 
-Planned: subset + ordered gradient column → hierarchical clustering per gradient
-level → match closest clusters → find condition columns that best correlate with
-cluster differences, with significance vs the rest of the dataset.
-Tab is a stub for now — see the in-app description.
+Welch + BH volcano from Python-like metadata filters (`'column' in […]`,
+`'column' <= value`, `&` `|` `~`). Samples PCA colored Bin A / Bin B / overlap /
+rest; click volcano points for gene metadata. Celov when writable.
+
+### Parallel conditions
+
+Per-level Ward vs all non-subset samples; closest / unique-closest LC.
+PCA per level: closest α=1 styled by metadata color/shape/size columns; other
+points α=0.2. Genes: pooled gradients + profiles (Celov when writable). No
+condition enrichment on this branch.
+
+### Gene → PCA
+
+Paste gene IDs/names or search hardcoded fields (`geneID`, `geneName`,
+`geneNameA` / `geneNameC` variants). Colors the PCA by each gene’s expression.
+
+### Linear classifier ARI
+
+Classifier performance plot includes per-PC class end-split ARI (right axis).
+Top PC / classifier genes are listed in tables for reading into Gene → PCA.
 
 ### Gene enrichment *(placeholder)*
 Planned: whereever there is the celov option, write own pathway enrichment code/use other enrichment tools
