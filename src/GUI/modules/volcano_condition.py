@@ -107,9 +107,29 @@ def _expr_col_name(col: str) -> str:
     return repr(str(col))
 
 
-def _entry_clause(col: str, values: list[str]) -> str:
+def _is_boolish_series(series: pd.Series) -> bool:
+    if pd.api.types.is_bool_dtype(series):
+        return True
+    uniq = {str(v).strip().lower() for v in series.dropna().unique()}
+    return bool(uniq) and uniq <= {"true", "false"}
+
+
+def _filter_literal(value: str, *, boolish: bool) -> str:
+    """Format a value for a filter clause; bare True/False for bool columns."""
+    text = str(value).strip()
+    if boolish and text.lower() in {"true", "false"}:
+        return "True" if text.lower() == "true" else "False"
+    return repr(text)
+
+
+def _entry_clause(
+    col: str,
+    values: list[str],
+    series: pd.Series | None = None,
+) -> str:
     name = _expr_col_name(col)
-    lits = [repr(str(v)) for v in values]
+    boolish = series is not None and _is_boolish_series(series)
+    lits = [_filter_literal(v, boolish=boolish) for v in values]
     if len(lits) == 1:
         return f"{name} == {lits[0]}"
     return f"{name} in [{', '.join(lits)}]"
@@ -198,6 +218,66 @@ def _rewrite_numeric_cmp(expr: str) -> str:
     return re.sub(
         r"\b([A-Za-z_][\w]*)\s*(<=|>=|<|>)\s*(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\b",
         r"pd_to_numeric(\1) \2 \3",
+        expr,
+    )
+
+
+def _bool_col_aliases(meta: pd.DataFrame) -> set[str]:
+    """Series names / aliases that behave as boolean in filter expressions."""
+    names: set[str] = set()
+    for col in meta.columns:
+        if not _is_boolish_series(meta[col]):
+            continue
+        key = str(col)
+        names.add(key)
+        alias = _col_alias(key)
+        if alias:
+            names.add(alias)
+    return names
+
+
+def _rewrite_bool_string_cmp(expr: str, meta: pd.DataFrame) -> str:
+    """``Biofilm == 'True'`` → ``Biofilm == True`` for bool-like columns.
+
+    The value helper used to insert quoted ``'True'``/``'False'``, which never
+    matches a real bool dtype column (0 samples → PCA/volcano errors).
+    """
+    bool_names = _bool_col_aliases(meta)
+    if not bool_names:
+        return expr
+
+    def repl_cmp(m: re.Match) -> str:
+        col, op, val = m.group(1), m.group(2), m.group(3)
+        if col not in bool_names:
+            return m.group(0)
+        lit = "True" if val.lower() == "true" else "False"
+        return f"{col} {op} {lit}"
+
+    expr = re.sub(
+        r"\b([A-Za-z_][\w]*)\s*(==|!=)\s*['\"](True|False|true|false)['\"]",
+        repl_cmp,
+        expr,
+    )
+
+    def repl_isin_list(m: re.Match) -> str:
+        col, body = m.group(1), m.group(2)
+        if col not in bool_names:
+            return m.group(0)
+
+        def lit(vm: re.Match) -> str:
+            return "True" if vm.group(1).lower() == "true" else "False"
+
+        new_body = re.sub(
+            r"['\"](True|False|true|false)['\"]",
+            lit,
+            body,
+            flags=re.IGNORECASE,
+        )
+        return f"{col}.isin([{new_body}])"
+
+    return re.sub(
+        r"\b([A-Za-z_][\w]*)\.isin\(\[([^\[\]]*)\]\)",
+        repl_isin_list,
         expr,
     )
 
@@ -361,6 +441,7 @@ def _eval_bool_expr(expr: str, meta: pd.DataFrame, local: dict) -> pd.Series:
     if re.match(r"not\b", text):
         return ~_eval_bool_expr(text[3:], meta, local)
     atomic = _rewrite_list_membership(text)
+    atomic = _rewrite_bool_string_cmp(atomic, meta)
     atomic = _rewrite_numeric_cmp(atomic)
     _require_columns(atomic, local)
     ns = _inject_bare_strings(atomic, local)
@@ -415,6 +496,7 @@ def eval_meta_mask(meta: pd.DataFrame, expr: str) -> pd.Series:
     if "__" in raw:
         raise ValueError("Invalid filter expression.")
     rewritten = _rewrite_quoted_columns(raw, meta)
+    rewritten = _rewrite_bool_string_cmp(rewritten, meta)
     return _eval_bool_expr(rewritten, meta, _meta_locals(meta))
 
 
@@ -857,16 +939,23 @@ class VolcanoConditionModule:
             State("vc-help-entries", "value"),
             State("vc-a-expr", "value"),
             State("vc-b-expr", "value"),
+            State("session-store", "data"),
             prevent_initial_call=True,
         )
-        def _insert_entries(n_a, n_b, col, entries, expr_a, expr_b):
+        def _insert_entries(n_a, n_b, col, entries, expr_a, expr_b, session_blob):
             triggered = callback_context.triggered_id
             if not col or triggered not in {"vc-help-ins-a", "vc-help-ins-b"}:
                 return no_update, no_update
             values = [str(v) for v in (entries or []) if v is not None and str(v) != ""]
             if not values:
                 return no_update, no_update
-            clause = _entry_clause(str(col), values)
+            session = session_from_store(session_blob)
+            series = (
+                session.metadata[col]
+                if session.metadata is not None and col in session.metadata.columns
+                else None
+            )
+            clause = _entry_clause(str(col), values, series=series)
             if triggered == "vc-help-ins-a":
                 return _append_clause(expr_a, clause), no_update
             return no_update, _append_clause(expr_b, clause)
@@ -874,7 +963,7 @@ class VolcanoConditionModule:
         @app.callback(
             Output("vc-bins-pca-fig", "figure"),
             Output("vc-bins-pca-status", "children"),
-            Output("vc-bins-cache", "data"),
+            Output("vc-bins-cache", "data", allow_duplicate=True),
             Input("vc-bins-pca-run", "n_clicks"),
             State("session-store", "data"),
             State("vc-a-expr", "value"),
@@ -912,7 +1001,7 @@ class VolcanoConditionModule:
         @app.callback(
             Output("vc-fig", "figure"),
             Output("vc-status", "children"),
-            Output("vc-cache", "data"),
+            Output("vc-cache", "data", allow_duplicate=True),
             Output("vc-mark-wrap", "style"),
             Output("vc-mark-col", "options"),
             Output("vc-mark-col", "value"),

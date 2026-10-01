@@ -900,7 +900,7 @@ class GeneGradientsModule:
             ]
 
         @app.callback(
-            Output("grad-cache", "data"),
+            Output("grad-cache", "data", allow_duplicate=True),
             Output("grad-status", "children"),
             Output("grad-selected-genes", "data", allow_duplicate=True),
             Output("grad-last-gene", "data", allow_duplicate=True),

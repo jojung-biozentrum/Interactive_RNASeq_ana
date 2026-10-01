@@ -769,7 +769,7 @@ class PCAModule:
             return data
 
         @app.callback(
-            Output("pca-cache", "data"),
+            Output("pca-cache", "data", allow_duplicate=True),
             Output("pca-status", "children"),
             Output("pca-clf-cache", "data", allow_duplicate=True),
             Output("pca-x", "options"),

@@ -483,7 +483,7 @@ class GeneExprPCAModule:
             Output("gxp-fig", "figure"),
             Output("gxp-fig", "style"),
             Output("gxp-status", "children"),
-            Output("gxp-cache", "data"),
+            Output("gxp-cache", "data", allow_duplicate=True),
             Input("gxp-run", "n_clicks"),
             Input("gxp-shape", "value"),
             Input("gxp-size", "value"),

@@ -125,24 +125,66 @@ def create_app(
     return app
 
 
+# Analysis result stores wiped when the active dataset changes (same callback as load).
+_MODULE_CACHE_IDS = (
+    "pca-cache",
+    "pca-clf-cache",
+    "umap-cache",
+    "gxp-cache",
+    "grad-cache",
+    "hc-cache",
+    "par-cache",
+    "par-grad-cache",
+    "vc-bins-cache",
+    "vc-cache",
+)
+
+
+def _clear_module_runtimes() -> None:
+    """Drop process-local analysis results so a new dataset cannot reuse them."""
+    from src.GUI.modules.clustering import _HC_RUNTIME
+    from src.GUI.modules.gene_expr_pca import _GXP_RUNTIME
+    from src.GUI.modules.gene_gradients import _GRAD_RUNTIME
+    from src.GUI.modules.parallel_conditions import _PAR_RUNTIME
+    from src.GUI.modules.pca import _PCA_RUNTIME
+    from src.GUI.modules.umap_mod import _UMAP_RUNTIME
+    from src.GUI.modules.volcano_condition import _VC_RUNTIME
+
+    for rt in (
+        _PCA_RUNTIME,
+        _UMAP_RUNTIME,
+        _GXP_RUNTIME,
+        _GRAD_RUNTIME,
+        _HC_RUNTIME,
+        _PAR_RUNTIME,
+        _VC_RUNTIME,
+    ):
+        rt.clear()
+
+
 def _register_core_callbacks(app: Dash) -> None:
     @app.callback(
         Output("session-store", "data"),
         Output("ds-status", "children"),
+        *[Output(cid, "data") for cid in _MODULE_CACHE_IDS],
         Input("ds-active", "value"),
         Input("project-store", "data"),
     )
     def _load_session(active, blob):
+        empty_caches = (None,) * len(_MODULE_CACHE_IDS)
+        _clear_module_runtimes()
         if not blob or not blob.get("root"):
             return (
                 {"ready": False, "error": "No project", "meta_columns": []},
                 "No readable data folder.",
+                *empty_caches,
             )
         name = active if isinstance(active, str) else (active[0] if active else None)
         if not name:
             return (
                 {"ready": False, "error": "No dataset selected", "meta_columns": []},
                 "Select an active dataset.",
+                *empty_caches,
             )
         from src.GUI.project import Project
 
@@ -159,7 +201,7 @@ def _register_core_callbacks(app: Dash) -> None:
             )
         else:
             msg = session.error or "Failed to load."
-        return store, msg
+        return store, msg, *empty_caches
 
 
 def main(argv: list[str] | None = None) -> None:

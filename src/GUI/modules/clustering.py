@@ -902,7 +902,7 @@ class ClusteringModule:
             return [{"label": v, "value": v} for v in vals]
 
         @app.callback(
-            Output("hc-cache", "data"),
+            Output("hc-cache", "data", allow_duplicate=True),
             Output("hc-status", "children"),
             Output("hc-pca-x", "options"),
             Output("hc-pca-y", "options"),

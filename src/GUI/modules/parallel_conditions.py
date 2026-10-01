@@ -1330,7 +1330,7 @@ class ParallelConditionsModule:
             return opts, value
 
         @app.callback(
-            Output("par-cache", "data"),
+            Output("par-cache", "data", allow_duplicate=True),
             Output("par-status", "children"),
             Output("par-summary", "children"),
             Input("par-run", "n_clicks"),
@@ -1579,7 +1579,7 @@ class ParallelConditionsModule:
             return sample_detail_table(row)
 
         @app.callback(
-            Output("par-grad-cache", "data"),
+            Output("par-grad-cache", "data", allow_duplicate=True),
             Output("par-grad-status", "children"),
             Output("par-grad-genes", "value", allow_duplicate=True),
             Output("par-grad-selected", "data", allow_duplicate=True),

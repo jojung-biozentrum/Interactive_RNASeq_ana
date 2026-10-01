@@ -464,7 +464,7 @@ class UMAPModule:
             return data
 
         @app.callback(
-            Output("umap-cache", "data"),
+            Output("umap-cache", "data", allow_duplicate=True),
             Output("umap-status", "children"),
             Output("umap-x", "options"),
             Output("umap-y", "options"),
