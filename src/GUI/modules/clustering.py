@@ -50,6 +50,7 @@ from ..data_store import (
 from .hc_plots import (
     detail_from_heatmap_click,
     dendrogram_colored_fig,
+    gene_subset_pca_scores,
     heatmap_with_dendro,
     pca_cluster_fig,
     volcano_fig_from_results,
@@ -954,8 +955,10 @@ class ClusteringModule:
                 html.Hr(),
                 html.H6("Gene expression PCA"),
                 html.P(
-                    "PCA on samples using the top N volcano genes (same score and "
-                    "up / down / up&down / all options as Celov). Colored by HC cluster.",
+                    "PCA on samples using the top N volcano genes as features "
+                    "(same score and up / down / up&down / all options as Celov). "
+                    "This is a new PCA on those genes — not the Samples PCA. "
+                    "Points colored by HC cluster.",
                     className="text-muted small",
                 ),
                 dbc.Row(
@@ -1730,25 +1733,24 @@ class ClusteringModule:
             if session is None or session.expression is None:
                 return empty, "Load a dataset first.", [], no_update
             genes = _top_volcano_gene_ids(results, score or "fold_change", mode, topn)
-            expr = session.expression
-            genes = [g for g in genes if g in expr.columns]
-            if len(genes) < 2:
-                return empty, "Need at least 2 genes present in the expression matrix.", [], no_update
-            # samples × genes (same orientation as session); drop incomplete rows
-            X = expr[genes].apply(pd.to_numeric, errors="coerce").dropna(axis=0, how="any")
-            if len(X) < 3:
-                return empty, "Too few complete samples for gene PCA.", genes, no_update
-            pca = PCA()
-            scores = pca.fit_transform(np.asarray(X, dtype=float))
-            score_df = pd.DataFrame(
-                scores[:, :2],
-                index=X.index.astype(str),
-                columns=["PC1", "PC2"],
-            )
+            score_df, var, err = gene_subset_pca_scores(session.expression, genes)
+            if score_df is None:
+                return empty, err, [], no_update
+            genes = [str(g) for g in genes if str(g) in set(map(str, session.expression.columns))]
+            # Metadata only (never prior PC columns from Samples PCA)
             meta = _HC_RUNTIME.get("score_df")
             if isinstance(meta, pd.DataFrame):
-                keep = [c for c in meta.columns if c not in score_df.columns]
-                score_df = score_df.join(meta[keep], how="left")
+                keep = [
+                    c
+                    for c in meta.columns
+                    if c not in score_df.columns
+                    and not (str(c).startswith("PC") and str(c)[2:].isdigit())
+                ]
+                meta_join = meta[keep].copy()
+                meta_join.index = meta_join.index.astype(str)
+                score_df = score_df.copy()
+                score_df.index = score_df.index.astype(str)
+                score_df = score_df.join(meta_join, how="left")
             n = _HC_RUNTIME["n_samples"]
             t_use = max(2, min(int(t or _HC_RUNTIME.get("t_use") or 2), n))
             labels_all = _cut_clusters(_HC_RUNTIME["Z_samples"], t_use)
@@ -1768,15 +1770,16 @@ class ClusteringModule:
                 bin_a=bins["a"],
                 bin_b=bins["b"],
                 title=_plotly_title(
-                    f"Gene expression PCA (top {len(genes)} volcano genes)",
+                    f"Gene expression PCA ({len(genes)} genes as features)",
                     f"score={score or 'fold_change'}, mode={mode or 'up_and_down'}",
                 ),
+                uirevision="hc-gene-pca",
+                var_ratio=var,
             )
             fig = set_fig_size(fig, fig_w, fig_h)
             msg = (
-                f"PCA on {len(X)} samples × {len(genes)} genes "
-                f"(PC1 {100 * float(pca.explained_variance_ratio_[0]):.1f}%, "
-                f"PC2 {100 * float(pca.explained_variance_ratio_[1]):.1f}%)."
+                f"PCA on {len(score_df)} samples × {len(genes)} genes "
+                f"(PC1 {100 * var[0]:.1f}%, PC2 {100 * var[1]:.1f}%)."
             )
             return fig, msg, genes, genes
 

@@ -8,6 +8,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from scipy.cluster import hierarchy
+from sklearn.decomposition import PCA
 
 from ..components.controls import apply_export_layout, equal_xy_axes
 from ..components.gene_meta_mark import (
@@ -342,6 +343,40 @@ def heatmap_with_dendro(
     return fig
 
 
+def gene_subset_pca_scores(
+    expr: pd.DataFrame,
+    genes: list[str],
+) -> tuple[pd.DataFrame | None, list[float], str]:
+    """PCA on samples × selected genes only (not a prior all-gene PCA).
+
+    Returns ``(score_df with PC1/PC2, var_ratio, error_or_empty)``.
+    """
+    genes = [str(g) for g in (genes or [])]
+    have = {str(c) for c in expr.columns}
+    genes = [g for g in genes if g in have]
+    if len(genes) < 2:
+        return None, [], "Need at least 2 genes present in the expression matrix."
+    # Align column labels to str for reliable subsetting
+    if any(not isinstance(c, str) for c in expr.columns):
+        expr = expr.copy()
+        expr.columns = expr.columns.astype(str)
+    X = expr[genes].apply(pd.to_numeric, errors="coerce").dropna(axis=0, how="any")
+    if len(X) < 3:
+        return None, [], "Too few complete samples for gene PCA."
+    pca = PCA()
+    scores = pca.fit_transform(np.asarray(X, dtype=float))
+    n_pcs = min(2, scores.shape[1])
+    if n_pcs < 2:
+        return None, [], "PCA did not yield PC1/PC2."
+    score_df = pd.DataFrame(
+        scores[:, :2],
+        index=X.index,
+        columns=["PC1", "PC2"],
+    )
+    var = list(map(float, pca.explained_variance_ratio_))
+    return score_df, var, ""
+
+
 def pca_cluster_fig(
     score_df: pd.DataFrame,
     cluster_labels: np.ndarray,
@@ -355,6 +390,8 @@ def pca_cluster_fig(
     alpha_a: float = 1.0,
     alpha_b: float = 1.0,
     title: str | dict | None = None,
+    uirevision: str = "hc-pca",
+    var_ratio: list[float] | None = None,
 ) -> go.Figure:
     df = score_df.copy()
     df["HC_cluster"] = [cluster_label(c) for c in cluster_labels]
@@ -391,8 +428,11 @@ def pca_cluster_fig(
         title_lines=title_lines,
         legend=True,
         legend_kwargs={"title_text": "Cluster"},
-        uirevision="hc-pca",
+        uirevision=uirevision,
     )
+    if not zcol and var_ratio is not None and len(var_ratio) >= 2:
+        fig.update_xaxes(title_text=f"{x_col} ({100 * float(var_ratio[0]):.1f}%)")
+        fig.update_yaxes(title_text=f"{y_col} ({100 * float(var_ratio[1]):.1f}%)")
     set_a = {str(int(c)) for c in (bin_a or [])}
     set_b = {str(int(c)) for c in (bin_b or [])}
     sel = {str(int(c)) for c in (selected or [])} or (set_a | set_b)

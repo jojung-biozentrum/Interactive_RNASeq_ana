@@ -46,7 +46,7 @@ from .clustering import (
     _volcano_weighed_for_celov,
     volcano_cluster_vs_cluster,
 )
-from .hc_plots import volcano_fig_from_results
+from .hc_plots import gene_subset_pca_scores, volcano_fig_from_results
 from .pca_classifier import save_classifier_celov
 
 _GRAPH_CONFIG = {
@@ -713,8 +713,8 @@ class VolcanoConditionModule:
             [
                 html.P(
                     "Volcano contrast of Bin A vs Bin B from Samples (overlap dropped). "
-                    "Gene-expression PCA uses top volcano genes; points colored by the "
-                    "same Bin A / Bin B / overlap / rest groups.",
+                    "Gene-expression PCA fits a new PCA using the top N volcano genes "
+                    "as features (not the Samples bins PCA); points colored by bin.",
                     className="text-muted small",
                 ),
                 dbc.Row(
@@ -867,9 +867,10 @@ class VolcanoConditionModule:
                 html.Hr(),
                 html.H6("Gene expression PCA"),
                 html.P(
-                    "PCA on samples using the top N volcano genes (same score and "
-                    "up / down / up&down / all options as Celov). Colored by Bin A / "
-                    "Bin B / overlap / rest.",
+                    "PCA on samples using the top N volcano genes as features "
+                    "(same score and up / down / up&down / all options as Celov). "
+                    "New PCA on those genes — not the Samples bins PCA. "
+                    "Colored by Bin A / Bin B / overlap / rest.",
                     className="text-muted small",
                 ),
                 dbc.Row(
@@ -1290,25 +1291,14 @@ class VolcanoConditionModule:
             if session is None or not session.ready or session.expression is None:
                 return empty, "Load a dataset first.", [], no_update
             genes = _top_volcano_gene_ids(results, score or "fold_change", mode, topn)
-            expr = session.expression
-            genes = [g for g in genes if g in expr.columns]
-            if len(genes) < 2:
-                return (
-                    empty,
-                    "Need at least 2 genes present in the expression matrix.",
-                    [],
-                    no_update,
-                )
-            X = expr[genes].apply(pd.to_numeric, errors="coerce").dropna(axis=0, how="any")
-            if len(X) < 3:
-                return empty, "Too few complete samples for gene PCA.", genes, no_update
-            pca = PCA()
-            scores = pca.fit_transform(np.asarray(X, dtype=float))
-            score_df = pd.DataFrame(
-                scores[:, :2],
-                index=X.index,
-                columns=["PC1", "PC2"],
-            )
+            score_df, var, err = gene_subset_pca_scores(session.expression, genes)
+            if score_df is None:
+                return empty, err, [], no_update
+            genes = [
+                str(g)
+                for g in genes
+                if str(g) in set(map(str, session.expression.columns))
+            ]
             groups = _VC_RUNTIME.get("groups")
             if not isinstance(groups, pd.Series) and session.metadata is not None:
                 try:
@@ -1322,15 +1312,17 @@ class VolcanoConditionModule:
                 score_df,
                 groups.reindex(score_df.index).fillna("rest"),
                 title=_plotly_title(
-                    f"Gene expression PCA (top {len(genes)} volcano genes)",
+                    f"Gene expression PCA ({len(genes)} genes as features)",
                     f"score={score or 'fold_change'}, mode={mode or 'up_and_down'}",
                 ),
                 uirevision="vc-gene-pca",
             )
+            if len(var) >= 2:
+                fig.update_xaxes(title_text=f"PC1 ({100 * var[0]:.1f}%)")
+                fig.update_yaxes(title_text=f"PC2 ({100 * var[1]:.1f}%)")
             fig = set_fig_size(fig, fig_w, fig_h)
             msg = (
-                f"PCA on {len(X)} samples × {len(genes)} genes "
-                f"(PC1 {100 * float(pca.explained_variance_ratio_[0]):.1f}%, "
-                f"PC2 {100 * float(pca.explained_variance_ratio_[1]):.1f}%)."
+                f"PCA on {len(score_df)} samples × {len(genes)} genes "
+                f"(PC1 {100 * var[0]:.1f}%, PC2 {100 * var[1]:.1f}%)."
             )
             return fig, msg, genes, genes
