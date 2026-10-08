@@ -10,13 +10,62 @@ import plotly.graph_objects as go
 
 _COLOR_MARK = "#e41a1c"
 
-# Locus-lookup columns used for gene hover (and Gene expression profiles search).
+# Locus-lookup name columns for titles, search labels, and hover.
 # From locus_lookup_biocyc_ids_handcurated.csv.
 GENE_HOVER_COLUMNS = (
     "geneName",
     "Gene name A1552",
     "Gene name C6706",
+    "old locusTag",
 )
+
+
+def gene_name_parts_from_row(row: pd.Series | None) -> list[str]:
+    """All non-empty name tokens from ``GENE_HOVER_COLUMNS`` (deduped, order kept)."""
+    if row is None:
+        return []
+    parts: list[str] = []
+    seen: set[str] = set()
+    for col in GENE_HOVER_COLUMNS:
+        if col not in row.index:
+            continue
+        for tok in split_meta_tokens(row.get(col)):
+            key = tok.lower()
+            if key in seen:
+                continue
+            parts.append(tok)
+            seen.add(key)
+    return parts
+
+
+def gene_display_title(gid: str, row: pd.Series | None = None) -> str:
+    """Title with every name variety: ``name1 / name2 / oldTag (geneID)``."""
+    gid = str(gid)
+    names = [n for n in gene_name_parts_from_row(row) if n != gid]
+    if names:
+        return f"{' / '.join(names)} ({gid})"
+    return gid
+
+
+def gene_titles_from_lookup(
+    genes: list[str],
+    lookup: pd.DataFrame | None,
+) -> list[str]:
+    """Panel titles for gene IDs using locus-lookup name columns."""
+    genes = [str(g) for g in genes]
+    if lookup is None or lookup.empty:
+        return list(genes)
+    id_col = "geneID" if "geneID" in lookup.columns else (
+        "locusTag" if "locusTag" in lookup.columns else None
+    )
+    if id_col is None:
+        return list(genes)
+    by_id: dict[str, pd.Series] = {}
+    for _, row in lookup.iterrows():
+        gid = str(row.get(id_col, "") or "").strip()
+        if gid and gid not in by_id:
+            by_id[gid] = row
+    return [gene_display_title(g, by_id.get(g)) for g in genes]
 
 
 def split_meta_tokens(value) -> list[str]:
@@ -88,19 +137,7 @@ def gene_search_options(
                     pieces.append(text)
             if q not in " ".join(pieces).lower():
                 continue
-            # Prefer a short gene name in the label when available.
-            display = None
-            for c in GENE_HOVER_COLUMNS:
-                if c in lookup.columns:
-                    raw = row.get(c)
-                    if raw is None or (isinstance(raw, float) and pd.isna(raw)):
-                        continue
-                    tok = split_meta_tokens(raw)
-                    if tok:
-                        display = tok[0]
-                        break
-            label = f"{display} ({gid})" if display and display != gid else gid
-            opts.append({"label": label, "value": gid})
+            opts.append({"label": gene_display_title(gid, row), "value": gid})
             seen.add(gid)
             if len(opts) >= limit:
                 return opts

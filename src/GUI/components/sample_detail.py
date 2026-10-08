@@ -55,11 +55,9 @@ def gene_detail_table(gene_id: str, locus_lookup: pd.DataFrame | None) -> html.D
             ]
         )
     row = hit.iloc[0]
-    title = gid
-    for col in ("geneName", "gene_name", "old locusTag", "biocyc_id"):
-        if col in row.index and pd.notna(row[col]) and str(row[col]).strip():
-            title = f"{row[col]} ({gid})"
-            break
+    from .gene_meta_mark import gene_display_title
+
+    title = gene_display_title(gid, row)
     return sample_detail_table(row, scroll=False, title=title, extra={"geneID": gid})
 
 

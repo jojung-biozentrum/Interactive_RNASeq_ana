@@ -709,6 +709,7 @@ def gene_profile_biofilm_and_close_fig(
     order_levels: list[str],
     rep_col: str | None,
     results: pd.DataFrame | None = None,
+    lookup: pd.DataFrame | None = None,
 ) -> go.Figure:
     """Biofilm replicate lines + closest mean ± std and grey samples, one panel per gene."""
     gene_ids = set(expr_bio.index.astype(str)) | set(expr_close.index.astype(str))
@@ -725,7 +726,9 @@ def gene_profile_biofilm_and_close_fig(
     n = len(genes)
     n_cols = _PROFILE_COLS
     n_rows = int(math.ceil(n / n_cols))
-    titles = [_display_name_for_gene(results, g) for g in genes]
+    if lookup is None:
+        lookup = _PAR_RUNTIME.get("locus_lookup")
+    titles = [_display_name_for_gene(results, g, lookup) for g in genes]
     titles_full = titles + [""] * (n_rows * n_cols - n)
     v_space = 0.12 if n_rows <= 1 else min(0.22, 0.72 / (n_rows - 1))
     fig = make_subplots(
@@ -1889,5 +1892,6 @@ class ParallelConditionsModule:
                 order_levels=list(levels),
                 rep_col=rep_col if rep_col in meta_bio.columns else None,
                 results=results,
+                lookup=_PAR_RUNTIME.get("locus_lookup"),
             )
 

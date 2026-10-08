@@ -23,9 +23,9 @@ from ..components.controls import (
     parse_aes_choice,
 )
 from ..components.gene_meta_mark import (
-    GENE_HOVER_COLUMNS,
     gene_pick_controls,
     gene_search_options,
+    gene_titles_from_lookup,
     merge_gene_selection,
     parse_gene_ids,
 )
@@ -56,45 +56,6 @@ def _gxp_fig_size(n_rows: int, n_cols: int, *, use_3d: bool = False) -> tuple[in
 def _plotly_title(*lines: str) -> dict:
     text = "<br>".join(x for x in lines if x is not None and str(x).strip() != "")
     return {"text": text, "x": 0.5, "xanchor": "center"}
-
-
-def _lookup_id_col(lookup: pd.DataFrame) -> str | None:
-    if "geneID" in lookup.columns:
-        return "geneID"
-    if "locusTag" in lookup.columns:
-        return "locusTag"
-    return None
-
-
-def _display_name_from_row(row: pd.Series) -> str | None:
-    for col in GENE_HOVER_COLUMNS:
-        if col not in row.index:
-            continue
-        val = row.get(col)
-        if val is None or (isinstance(val, float) and pd.isna(val)):
-            continue
-        text = str(val).strip()
-        if text:
-            return text.split(";")[0].strip() or text
-    return None
-
-
-def _titles_for_genes(genes: list[str], lookup: pd.DataFrame | None) -> list[str]:
-    """Panel titles from locus name columns when available."""
-    if lookup is None or lookup.empty:
-        return list(genes)
-    id_col = _lookup_id_col(lookup)
-    if id_col is None:
-        return list(genes)
-    by_id: dict[str, str] = {}
-    for _, row in lookup.iterrows():
-        gid = str(row.get(id_col, "") or "")
-        if not gid or gid in by_id:
-            continue
-        label = _display_name_from_row(row)
-        if label and label != gid:
-            by_id[gid] = f"{label} ({gid})"
-    return [by_id.get(g, g) for g in genes]
 
 
 def _resolve_shape_size(shape, size, columns):
@@ -543,7 +504,7 @@ class GeneExprPCAModule:
                     lookup = load_locus_lookup(path)
                 except Exception:  # noqa: BLE001
                     lookup = None
-            titles = _titles_for_genes(genes, lookup)
+            titles = gene_titles_from_lookup(genes, lookup)
             score_df = _score_frame_for_plot(pca_cache)
             var = list((pca_cache or {}).get("var_ratio") or [])
             if score_df is None or not any(

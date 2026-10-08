@@ -229,16 +229,26 @@ def _click_gene_id(click_data) -> str | None:
     return str(text) if text is not None else None
 
 
-def _display_name_for_gene(results: pd.DataFrame | None, gene: str) -> str:
-    if results is None or "geneID" not in results.columns:
-        return gene
-    hit = results.loc[results["geneID"].astype(str) == gene]
-    if hit.empty:
-        return gene
-    row = hit.iloc[0]
-    for col in ("geneName", "gene_name", "old locusTag", "locusTag"):
-        if col in hit.columns and pd.notna(row[col]) and str(row[col]).strip():
-            return str(row[col]).strip()
+def _display_name_for_gene(
+    results: pd.DataFrame | None,
+    gene: str,
+    lookup: pd.DataFrame | None = None,
+) -> str:
+    """Panel title: all locus name varieties + geneID."""
+    from ..components.gene_meta_mark import gene_display_title, gene_titles_from_lookup
+
+    gene = str(gene)
+    if lookup is None or not isinstance(lookup, pd.DataFrame) or lookup.empty:
+        lookup = _GRAD_RUNTIME.get("locus_lookup")
+    if results is not None and "geneID" in getattr(results, "columns", []):
+        hit = results.loc[results["geneID"].astype(str) == gene]
+        if not hit.empty:
+            title = gene_display_title(gene, hit.iloc[0])
+            # Results rows often lack locus name columns — prefer lookup then.
+            if title != gene:
+                return title
+    if isinstance(lookup, pd.DataFrame) and not lookup.empty:
+        return gene_titles_from_lookup([gene], lookup)[0]
     return gene
 
 
@@ -405,6 +415,7 @@ def gene_profile_grid_fig(
     order_levels: list[str],
     rep_col: str | None,
     results: pd.DataFrame | None = None,
+    lookup: pd.DataFrame | None = None,
 ) -> go.Figure:
     """Notebook-style region profiles (line + markers per replicate), ≤6×6 grid.
 
@@ -433,7 +444,7 @@ def gene_profile_grid_fig(
     n = len(genes)
     n_cols = _PROFILE_COLS
     n_rows = int(math.ceil(n / n_cols))
-    titles = [_display_name_for_gene(results, g) for g in genes]
+    titles = [_display_name_for_gene(results, g, lookup) for g in genes]
     # Pad so make_subplots keeps a full 6-col row (empty cells stay blank)
     titles_full = titles + [""] * (n_rows * n_cols - n)
     # Extra vertical gap so row i+1 subplot titles clear row i x-tick labels.
@@ -1370,5 +1381,6 @@ class GeneGradientsModule:
                 order_levels=order_levels,
                 rep_col=rep_col if isinstance(rep_col, str) else None,
                 results=results if isinstance(results, pd.DataFrame) else None,
+                lookup=_GRAD_RUNTIME.get("locus_lookup"),
             )
 
