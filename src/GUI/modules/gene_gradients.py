@@ -469,6 +469,8 @@ def pairwise_coeff_fig(
 
 def _level_tick_label(level: str) -> str:
     s = str(level)
+    if _is_numeric_levels([s]):
+        return f"{float(s):.4g}"  # 46.42857142857143 -> 46.43
     return s.replace("region", "") if s.lower().startswith("region") else s
 
 
@@ -564,6 +566,7 @@ def gene_profile_grid_fig(
                     x=x_pos,
                     y=ys,
                     mode="lines+markers",
+                    connectgaps=True,
                     name=str(replicate),
                     line=dict(color=color, width=1.5),
                     marker=dict(size=6, color=color),
