@@ -62,9 +62,14 @@ from .gene_gradients import (
     _REP_COLORS,
     _click_gene_id,
     _display_name_for_gene,
+    _is_numeric_levels,
+    _level_positions,
     _level_tick_label,
     _natural_sorted,
+    _order_list,
+    _sorted_levels,
     _subset_mask,
+    _trajectory_keys,
     gene_profile_grid_fig,
     gene_region_gradients,
     gradient_scatter_fig,
@@ -708,6 +713,7 @@ def gene_profile_biofilm_and_close_fig(
     order_col: str,
     order_levels: list[str],
     rep_col: str | None,
+    cond_col: str | None = None,
     results: pd.DataFrame | None = None,
     lookup: pd.DataFrame | None = None,
 ) -> go.Figure:
@@ -744,21 +750,19 @@ def gene_profile_biofilm_and_close_fig(
     meta_close = meta_close.copy()
     meta_close.index = meta_close.index.astype(str)
     meta_close[order_col] = meta_close[order_col].astype(str)
-    x_pos = list(range(len(order_levels)))
+    positions = _level_positions(order_levels)
+    x_pos = [positions[lv] for lv in order_levels]
     x_labels = [_level_tick_label(lv) for lv in order_levels]
-    if rep_col and rep_col in meta_bio.columns:
-        replicates = _natural_sorted(meta_bio[rep_col].dropna().unique())
-    else:
-        replicates = ["all"]
+    # trajectories = replicate × condition
+    bio_keys = _trajectory_keys(meta_bio, rep_col, cond_col)
+    close_keys = _trajectory_keys(meta_close, rep_col, cond_col)
+    replicates = _natural_sorted(bio_keys.unique())
     legend_done: set[str] = set()
     for gi, gene in enumerate(genes):
         row = gi // n_cols + 1
         col = gi % n_cols + 1
         for ri, replicate in enumerate(replicates):
-            if rep_col and rep_col in meta_bio.columns and replicate != "all":
-                rep_meta = meta_bio.loc[meta_bio[rep_col].astype(str) == str(replicate)]
-            else:
-                rep_meta = meta_bio
+            rep_meta = meta_bio.loc[bio_keys == replicate]
             ys: list[float | None] = []
             for level in order_levels:
                 samples = [s for s in rep_meta.index[rep_meta[order_col] == level] if s in expr_bio.columns]
@@ -794,7 +798,7 @@ def gene_profile_biofilm_and_close_fig(
         ys_pts: list[float] = []
         ys_m: list[float | None] = []
         yerr: list[float] = []
-        for i, level in enumerate(order_levels):
+        for level in order_levels:
             samples = [s for s in meta_close.index[meta_close[order_col] == level] if s in expr_close.columns]
             if not samples or gene not in expr_close.index:
                 ys_m.append(None)
@@ -803,7 +807,7 @@ def gene_profile_biofilm_and_close_fig(
             vals = pd.to_numeric(expr_close.loc[gene, samples], errors="coerce").to_numpy(dtype=float)
             finite = vals[np.isfinite(vals)]
             for v in finite:
-                xs_pts.append(float(i))
+                xs_pts.append(positions[level])
                 ys_pts.append(float(v))
             if len(finite) == 0:
                 ys_m.append(None)
@@ -811,6 +815,34 @@ def gene_profile_biofilm_and_close_fig(
                 continue
             ys_m.append(float(np.mean(finite)))
             yerr.append(float(np.std(finite, ddof=1)) if len(finite) > 1 else 0.0)
+        # one thin grey line per closest replicate × condition trajectory
+        if gene in expr_close.index:
+            for key in _natural_sorted(close_keys.unique()):
+                if key == "all":
+                    continue
+                k_meta = meta_close.loc[close_keys == key]
+                k_x: list[float] = []
+                k_y: list[float] = []
+                for level in order_levels:
+                    ids = [s for s in k_meta.index[k_meta[order_col] == level] if s in expr_close.columns]
+                    if ids:
+                        k_x.append(positions[level])
+                        k_y.append(float(np.nanmean(expr_close.loc[gene, ids].to_numpy(dtype=float))))
+                if k_x:
+                    fig.add_trace(
+                        go.Scatter(
+                            x=k_x,
+                            y=k_y,
+                            mode="lines",
+                            line=dict(color="#888888", width=1),
+                            opacity=0.6,
+                            legendgroup="closest samples",
+                            showlegend=False,
+                            hovertemplate=f"{titles[gi]}<br>closest {key}<br>expr=%{{y:.3g}}<extra></extra>",
+                        ),
+                        row=row,
+                        col=col,
+                    )
         if xs_pts:
             show_pts = "closest samples" not in legend_done
             if show_pts:
@@ -972,30 +1004,64 @@ class ParallelConditionsModule:
                         dbc.Col(
                             [
                                 html.Label("Subset column (biofilm)"),
-                                dcc.Dropdown(id="par-subset-col"),
+                                dcc.Dropdown(id="par-subset-col", clearable=True),
                             ],
                             md=3,
                         ),
                         dbc.Col(
                             [
                                 html.Label("Subset value"),
-                                dcc.Dropdown(id="par-subset-val"),
+                                dcc.Dropdown(id="par-subset-val", clearable=True),
                             ],
                             md=2,
                         ),
                         dbc.Col(
                             [
-                                html.Label("Level column"),
-                                dcc.Dropdown(id="par-order-col"),
+                                html.Label("Order column"),
+                                dcc.Dropdown(id="par-order-col", clearable=True),
                             ],
-                            md=3,
+                            md=2,
                         ),
                         dbc.Col(
                             [
-                                html.Label("Levels (order)"),
+                                html.Label("Replicate column"),
+                                dcc.Dropdown(id="par-grad-rep-col", clearable=True),
+                            ],
+                            md=2,
+                        ),
+                        dbc.Col(
+                            [
+                                html.Label("Condition number column"),
+                                dcc.Dropdown(id="par-cond-col", clearable=True),
+                            ],
+                            md=3,
+                        ),
+                    ],
+                    className="g-2 mb-2",
+                ),
+                dbc.Row(
+                    [
+                        dbc.Col(
+                            [
+                                html.Label("Levels included"),
                                 dcc.Dropdown(id="par-levels", multi=True),
                             ],
                             md=4,
+                        ),
+                        dbc.Col(
+                            [
+                                html.Label(
+                                    "Level order (categorical: drag to reorder, ranks 1, 2, …; "
+                                    "numeric: sorted by value, value used as x)"
+                                ),
+                                html.Div(
+                                    id="par-order-list",
+                                    className="border rounded p-2 bg-light",
+                                    **{"data-store": "par-order-store"},
+                                ),
+                                dcc.Store(id="par-order-store", data=[]),
+                            ],
+                            md=8,
                         ),
                     ],
                     className="g-2 mb-2",
@@ -1234,20 +1300,6 @@ class ParallelConditionsModule:
                     "that column.",
                     className="text-muted small",
                 ),
-                dbc.Row(
-                    [
-                        dbc.Col(
-                            [
-                                html.Label(
-                                    "Replicate column for subset of interest (optional)"
-                                ),
-                                dcc.Dropdown(id="par-grad-rep-col", clearable=True),
-                            ],
-                            md=4,
-                        ),
-                    ],
-                    className="g-2 mb-2",
-                ),
                 dcc.Graph(
                     id="par-grad-profiles",
                     figure={},
@@ -1294,6 +1346,18 @@ class ParallelConditionsModule:
             return opts, prefer
 
         @app.callback(
+            Output("par-cond-col", "options"),
+            Output("par-cond-col", "value"),
+            Input("session-store", "data"),
+            State("par-cond-col", "value"),
+        )
+        def _fill_cond_col(session_blob, current):
+            cols = list((session_blob or {}).get("meta_columns", []))
+            opts = [{"label": c, "value": c} for c in cols]
+            prefer = next((c for c in ("ConditionNumber", "Condition") if c in cols), None)
+            return opts, current if current in cols else prefer
+
+        @app.callback(
             Output("par-subset-val", "options"),
             Output("par-subset-val", "value"),
             Input("par-subset-col", "value"),
@@ -1326,11 +1390,31 @@ class ParallelConditionsModule:
             meta = session.metadata
             if sub_col and sub_val is not None and sub_col in meta.columns:
                 meta = meta.loc[_subset_mask(meta, sub_col, str(sub_val))]
-            levels = _natural_sorted(meta[order_col].dropna().astype(str).unique())
+            levels = _sorted_levels(meta[order_col].dropna().astype(str).unique())
             opts = [{"label": v, "value": v} for v in levels]
             default = [v for v in ("region1", "region2", "region3", "region4") if v in levels] or levels
             value = [v for v in (current or default) if v in levels] or default
             return opts, value
+
+        @app.callback(
+            Output("par-order-store", "data"),
+            Input("par-levels", "value"),
+            State("par-order-store", "data"),
+        )
+        def _update_order_store(selected, current):
+            selected = [str(v) for v in (selected or [])]
+            if _is_numeric_levels(selected):
+                return _sorted_levels(selected)
+            # keep the dragged order of levels that stay selected, append new ones
+            kept = [v for v in (current or []) if v in selected]
+            return kept + [v for v in selected if v not in kept]
+
+        @app.callback(
+            Output("par-order-list", "children"),
+            Input("par-order-store", "data"),
+        )
+        def _render_order_list(levels):
+            return _order_list(levels)
 
         @app.callback(
             Output("par-cache", "data", allow_duplicate=True),
@@ -1342,7 +1426,7 @@ class ParallelConditionsModule:
             State("par-subset-col", "value"),
             State("par-subset-val", "value"),
             State("par-order-col", "value"),
-            State("par-levels", "value"),
+            State("par-order-store", "data"),
             prevent_initial_call=True,
         )
         def _run(n_clicks, session_blob, project_blob, sub_col, sub_val, order_col, levels):
@@ -1613,7 +1697,9 @@ class ParallelConditionsModule:
             if len(samples) < 3:
                 return no_update, "Fewer than 3 closest samples.", no_update, no_update
             expr = X.loc[samples].T
-            meta_close = pd.DataFrame({order_col: labels}, index=samples)
+            # keep all metadata so profiles can split closest samples by replicate × condition
+            meta_close = meta_all.loc[samples].copy()
+            meta_close[order_col] = labels
             is_bio = is_bio.reindex(X.index).fillna(False)
             bio_keep = is_bio & meta_all[order_col].astype(str).isin(levels)
             bio_ids = [str(s) for s in meta_all.index[bio_keep] if str(s) in X.index]
@@ -1841,9 +1927,10 @@ class ParallelConditionsModule:
             Input("par-grad-selected", "data"),
             Input("par-grad-cache", "data"),
             Input("par-grad-rep-col", "value"),
+            Input("par-cond-col", "value"),
             State("session-store", "data"),
         )
-        def _par_profiles(selected, cache, rep_col, session_blob):
+        def _par_profiles(selected, cache, rep_col, cond_col, session_blob):
             order_col = (cache or {}).get("order_col") or _PAR_RUNTIME.get("order_col") or "region"
             levels = list((cache or {}).get("levels") or _PAR_RUNTIME.get("levels") or [])
             results = _PAR_RUNTIME.get("grad_results")
@@ -1869,7 +1956,8 @@ class ParallelConditionsModule:
                     close_ids = [s for s in close_ids if s in X.index]
                     if close_ids and bio_ids and meta_all is not None:
                         expr = X.loc[close_ids].T
-                        meta = pd.DataFrame({order_col: close_labs[: len(close_ids)]}, index=close_ids)
+                        meta = meta_all.loc[close_ids].copy()
+                        meta[order_col] = close_labs[: len(close_ids)]
                         expr_bio = X.loc[bio_ids].T
                         meta_bio = meta_all.loc[bio_ids].copy()
                         meta_bio[order_col] = meta_bio[order_col].astype(str)
@@ -1891,6 +1979,7 @@ class ParallelConditionsModule:
                 order_col=order_col,
                 order_levels=list(levels),
                 rep_col=rep_col if rep_col in meta_bio.columns else None,
+                cond_col=cond_col if cond_col in meta_bio.columns else None,
                 results=results,
                 lookup=_PAR_RUNTIME.get("locus_lookup"),
             )

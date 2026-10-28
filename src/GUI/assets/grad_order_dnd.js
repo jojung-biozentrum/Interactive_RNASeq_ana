@@ -44,7 +44,7 @@
     if (!el || dragLevel == null) return;
     e.preventDefault();
     el.classList.remove("grad-ord-drag-over");
-    var list = el.closest("#grad-order-list");
+    var list = el.closest("[data-store]");
     if (!list) return;
     var targetLevel = el.getAttribute("data-level");
     var levels = levelsFromList(list);
@@ -54,7 +54,7 @@
     levels.splice(from, 1);
     levels.splice(to, 0, dragLevel);
     if (window.dash_clientside && typeof window.dash_clientside.set_props === "function") {
-      window.dash_clientside.set_props("grad-order-store", { data: levels });
+      window.dash_clientside.set_props(list.getAttribute("data-store"), { data: levels });
     }
   });
 })();

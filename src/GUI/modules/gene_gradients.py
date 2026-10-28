@@ -110,6 +110,52 @@ def _natural_sorted(values) -> list[str]:
     return sorted((str(v) for v in values), key=_natural_key)
 
 
+def _is_numeric_levels(levels) -> bool:
+    levels = list(levels)
+    return bool(levels) and pd.to_numeric(pd.Series(levels), errors="coerce").notna().all()
+
+
+def _sorted_levels(values) -> list[str]:
+    """Numeric levels sort by value, categorical ones naturally."""
+    values = [str(v) for v in values]
+    return sorted(values, key=float) if _is_numeric_levels(values) else _natural_sorted(values)
+
+
+def _level_positions(order_levels) -> dict[str, float]:
+    """x per level: the numeric value itself, or rank 1..n in the given (dragged) order."""
+    if _is_numeric_levels(order_levels):
+        return {lv: float(lv) for lv in order_levels}
+    return {lv: float(i) for i, lv in enumerate(order_levels, start=1)}
+
+
+def _trajectory_keys(meta: pd.DataFrame, rep_col: str | None, cond_col: str | None) -> pd.Series:
+    """One label per sample: replicate × condition (either part optional, "all" if neither)."""
+    parts = [meta[c].astype(str) for c in (rep_col, cond_col) if c and c in meta.columns]
+    if not parts:
+        return pd.Series("all", index=meta.index)
+    return parts[0].str.cat(parts[1:], sep=" × ")
+
+
+def _order_list(levels):
+    """Children for a level-order list; draggable only for categorical levels."""
+    levels = list(levels or [])
+    if not levels:
+        return html.P(
+            "No levels — choose order column / subset.",
+            className="text-muted small mb-0",
+        )
+    numeric = _is_numeric_levels(levels)
+    return [
+        html.Div(
+            level if numeric else f"{i + 1}. {level}",
+            className="grad-ord-item",
+            draggable="false" if numeric else "true",
+            **{"data-level": level},
+        )
+        for i, level in enumerate(levels)
+    ]
+
+
 def _subset_mask(meta: pd.DataFrame, column: str, value: str) -> pd.Series:
     col = meta[column]
     want = str(value).strip()
@@ -167,8 +213,8 @@ def gene_region_gradients(
     if expr.shape[1] < 3:
         raise ValueError("Fewer than 3 samples in ordered levels.")
 
-    rank_map = {level: rank for rank, level in enumerate(order_levels, start=1)} # rank the levels numerically following the custom set order of the levels
-    region_rank = meta[order_col].map(rank_map)
+    # x per sample: numeric level value, or rank in the custom level order
+    region_rank = meta[order_col].map(_level_positions(order_levels))
 
     region_means = pd.DataFrame(
         {
@@ -465,7 +511,8 @@ def gene_profile_grid_fig(
     meta = meta.copy()
     meta.index = meta.index.astype(str)
     meta[order_col] = meta[order_col].astype(str)
-    x_pos = list(range(len(order_levels)))
+    positions = _level_positions(order_levels)
+    x_pos = [positions[lv] for lv in order_levels]
     x_labels = [_level_tick_label(lv) for lv in order_levels]
 
     if rep_col and rep_col in meta.columns:
@@ -688,10 +735,14 @@ class GeneGradientsModule:
                     [
                         dbc.Col(
                             [
-                                html.Label("Level order (drag to reorder; ranks 1, 2, …)"),
+                                html.Label(
+                                    "Level order (categorical: drag to reorder, ranks 1, 2, …; "
+                                    "numeric: sorted by value, value used as x)"
+                                ),
                                 html.Div(
                                     id="grad-order-list",
                                     className="border rounded p-2 bg-light",
+                                    **{"data-store": "grad-order-store"},
                                 ),
                                 dcc.Store(id="grad-order-store", data=[]),
                             ],
@@ -887,28 +938,14 @@ class GeneGradientsModule:
             meta = session.metadata
             if subset_col and subset_val is not None and subset_col in meta.columns:
                 meta = meta.loc[_subset_mask(meta, subset_col, str(subset_val))]
-            return _natural_sorted(meta[order_col].dropna().unique())
+            return _sorted_levels(meta[order_col].dropna().unique())
 
         @app.callback(
             Output("grad-order-list", "children"),
             Input("grad-order-store", "data"),
         )
         def _render_order_list(levels):
-            levels = list(levels or [])
-            if not levels:
-                return html.P(
-                    "No levels — choose order column / subset.",
-                    className="text-muted small mb-0",
-                )
-            return [
-                html.Div(
-                    f"{i + 1}. {level}",
-                    className="grad-ord-item",
-                    draggable="true",
-                    **{"data-level": level},
-                )
-                for i, level in enumerate(levels)
-            ]
+            return _order_list(levels)
 
         @app.callback(
             Output("grad-cache", "data", allow_duplicate=True),
