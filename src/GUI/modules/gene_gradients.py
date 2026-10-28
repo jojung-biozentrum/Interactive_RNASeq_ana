@@ -128,9 +128,9 @@ def _level_positions(order_levels) -> dict[str, float]:
     return {lv: float(i) for i, lv in enumerate(order_levels, start=1)}
 
 
-def _trajectory_keys(meta: pd.DataFrame, rep_col: str | None, cond_col: str | None) -> pd.Series:
-    """One label per sample: replicate × condition (either part optional, "all" if neither)."""
-    parts = [meta[c].astype(str) for c in (rep_col, cond_col) if c and c in meta.columns]
+def _trajectory_keys(meta: pd.DataFrame, columns) -> pd.Series:
+    """One label per sample from the unique combination of ``columns`` ("all" if none)."""
+    parts = [meta[c].astype(str) for c in (columns or []) if c in meta.columns]
     if not parts:
         return pd.Series("all", index=meta.index)
     return parts[0].str.cat(parts[1:], sep=" × ")
@@ -459,7 +459,7 @@ def gene_profile_grid_fig(
     meta: pd.DataFrame,
     order_col: str,
     order_levels: list[str],
-    rep_col: str | None,
+    rep_cols: list[str] | None,
     results: pd.DataFrame | None = None,
     lookup: pd.DataFrame | None = None,
 ) -> go.Figure:
@@ -515,20 +515,15 @@ def gene_profile_grid_fig(
     x_pos = [positions[lv] for lv in order_levels]
     x_labels = [_level_tick_label(lv) for lv in order_levels]
 
-    if rep_col and rep_col in meta.columns:
-        replicates = _natural_sorted(meta[rep_col].dropna().unique())
-    else:
-        replicates = ["all"]
+    keys = _trajectory_keys(meta, rep_cols)
+    replicates = _natural_sorted(keys.unique())
 
     legend_done: set[str] = set()
     for gi, gene in enumerate(genes):
         row = gi // n_cols + 1
         col = gi % n_cols + 1
         for ri, replicate in enumerate(replicates):
-            if rep_col and rep_col in meta.columns and replicate != "all":
-                rep_meta = meta.loc[meta[rep_col].astype(str) == str(replicate)]
-            else:
-                rep_meta = meta
+            rep_meta = meta.loc[keys == replicate]
             ys: list[float | None] = []
             for level in order_levels:
                 samples = rep_meta.index[rep_meta[order_col] == level]
@@ -723,8 +718,8 @@ class GeneGradientsModule:
                         ),
                         dbc.Col(
                             [
-                                html.Label("Replicate column"),
-                                dcc.Dropdown(id="grad-rep-col", clearable=True),
+                                html.Label("Replicate column(s) — unique combination = one trajectory"),
+                                dcc.Dropdown(id="grad-rep-col", multi=True),
                             ],
                             md=3,
                         ),
@@ -879,7 +874,7 @@ class GeneGradientsModule:
         def _fill_meta_cols(session_blob):
             session = session_from_store(session_blob)
             if not session.ready or session.metadata is None:
-                return [], [], [], None, None, None
+                return [], [], [], None, None, []
             cols = [
                 c
                 for c in session.meta_columns()
@@ -895,7 +890,7 @@ class GeneGradientsModule:
             )
             if order is None and cols:
                 order = cols[min(1, len(cols) - 1)]
-            rep = "BiologicalReplicate" if "BiologicalReplicate" in cols else None
+            rep = ["TechnicalReplicate"] if "TechnicalReplicate" in cols else []
             return opts, opts, opts, subset, order, rep
 
         @app.callback(
@@ -1407,7 +1402,7 @@ class GeneGradientsModule:
                     meta=pd.DataFrame(),
                     order_col="level",
                     order_levels=[],
-                    rep_col=None,
+                    rep_cols=None,
                     results=None,
                 )
             return gene_profile_grid_fig(
@@ -1416,7 +1411,7 @@ class GeneGradientsModule:
                 meta=meta,
                 order_col=str(order_col),
                 order_levels=order_levels,
-                rep_col=rep_col if isinstance(rep_col, str) else None,
+                rep_cols=rep_col,
                 results=results if isinstance(results, pd.DataFrame) else None,
                 lookup=_GRAD_RUNTIME.get("locus_lookup"),
             )

@@ -62,7 +62,6 @@ from .gene_gradients import (
     _REP_COLORS,
     _click_gene_id,
     _display_name_for_gene,
-    _is_numeric_levels,
     _level_positions,
     _level_tick_label,
     _natural_sorted,
@@ -712,7 +711,7 @@ def gene_profile_biofilm_and_close_fig(
     meta_close: pd.DataFrame,
     order_col: str,
     order_levels: list[str],
-    rep_col: str | None,
+    rep_cols: list[str] | None,
     cond_col: str | None = None,
     results: pd.DataFrame | None = None,
     lookup: pd.DataFrame | None = None,
@@ -727,7 +726,7 @@ def gene_profile_biofilm_and_close_fig(
             meta=pd.DataFrame(),
             order_col=order_col,
             order_levels=order_levels,
-            rep_col=None,
+            rep_cols=None,
         )
     n = len(genes)
     n_cols = _PROFILE_COLS
@@ -754,8 +753,9 @@ def gene_profile_biofilm_and_close_fig(
     x_pos = [positions[lv] for lv in order_levels]
     x_labels = [_level_tick_label(lv) for lv in order_levels]
     # trajectories = replicate × condition
-    bio_keys = _trajectory_keys(meta_bio, rep_col, cond_col)
-    close_keys = _trajectory_keys(meta_close, rep_col, cond_col)
+    traj_cols = [*(rep_cols or []), *([cond_col] if cond_col else [])]
+    bio_keys = _trajectory_keys(meta_bio, traj_cols)
+    close_keys = _trajectory_keys(meta_close, traj_cols)
     replicates = _natural_sorted(bio_keys.unique())
     legend_done: set[str] = set()
     for gi, gene in enumerate(genes):
@@ -1024,48 +1024,31 @@ class ParallelConditionsModule:
                         ),
                         dbc.Col(
                             [
-                                html.Label("Replicate column"),
-                                dcc.Dropdown(id="par-grad-rep-col", clearable=True),
+                                html.Label("Replicate column(s) — unique combination = one trajectory"),
+                                dcc.Dropdown(id="par-grad-rep-col", multi=True),
                             ],
-                            md=2,
+                            md=3,
                         ),
                         dbc.Col(
                             [
                                 html.Label("Condition number column"),
                                 dcc.Dropdown(id="par-cond-col", clearable=True),
                             ],
-                            md=3,
+                            md=2,
                         ),
                     ],
                     className="g-2 mb-2",
                 ),
-                dbc.Row(
-                    [
-                        dbc.Col(
-                            [
-                                html.Label("Levels included"),
-                                dcc.Dropdown(id="par-levels", multi=True),
-                            ],
-                            md=4,
-                        ),
-                        dbc.Col(
-                            [
-                                html.Label(
-                                    "Level order (categorical: drag to reorder, ranks 1, 2, …; "
-                                    "numeric: sorted by value, value used as x)"
-                                ),
-                                html.Div(
-                                    id="par-order-list",
-                                    className="border rounded p-2 bg-light",
-                                    **{"data-store": "par-order-store"},
-                                ),
-                                dcc.Store(id="par-order-store", data=[]),
-                            ],
-                            md=8,
-                        ),
-                    ],
-                    className="g-2 mb-2",
+                html.Label(
+                    "Level order (categorical: drag to reorder, ranks 1, 2, …; "
+                    "numeric: sorted by value, value used as x)"
                 ),
+                html.Div(
+                    id="par-order-list",
+                    className="border rounded p-2 bg-light mb-2",
+                    **{"data-store": "par-order-store"},
+                ),
+                dcc.Store(id="par-order-store", data=[]),
                 dbc.Button("Run per-level clustering", id="par-run", color="primary", className="mb-2"),
                 html.Div(id="par-status", className="text-muted small mb-2"),
                 html.Div(id="par-summary"),
@@ -1334,16 +1317,8 @@ class ParallelConditionsModule:
         def _fill_par_rep(session_blob, current):
             cols = list((session_blob or {}).get("meta_columns", []))
             opts = [{"label": c, "value": c} for c in cols]
-            prefer = current if current in cols else (
-                "TechnicalReplicate"
-                if "TechnicalReplicate" in cols
-                else (
-                    "Replicate"
-                    if "Replicate" in cols
-                    else ("replicate" if "replicate" in cols else None)
-                )
-            )
-            return opts, prefer
+            kept = [c for c in (current or []) if c in cols]
+            return opts, kept or (["TechnicalReplicate"] if "TechnicalReplicate" in cols else [])
 
         @app.callback(
             Output("par-cond-col", "options"),
@@ -1375,39 +1350,20 @@ class ParallelConditionsModule:
             return opts, value
 
         @app.callback(
-            Output("par-levels", "options"),
-            Output("par-levels", "value"),
+            Output("par-order-store", "data"),
             Input("par-order-col", "value"),
             Input("par-subset-col", "value"),
             Input("par-subset-val", "value"),
             State("session-store", "data"),
-            State("par-levels", "value"),
         )
-        def _fill_levels(order_col, sub_col, sub_val, session_blob, current):
+        def _update_order_store(order_col, sub_col, sub_val, session_blob):
             session = session_from_store(session_blob)
             if session.metadata is None or not order_col or order_col not in session.metadata.columns:
-                return [], []
+                return []
             meta = session.metadata
             if sub_col and sub_val is not None and sub_col in meta.columns:
                 meta = meta.loc[_subset_mask(meta, sub_col, str(sub_val))]
-            levels = _sorted_levels(meta[order_col].dropna().astype(str).unique())
-            opts = [{"label": v, "value": v} for v in levels]
-            default = [v for v in ("region1", "region2", "region3", "region4") if v in levels] or levels
-            value = [v for v in (current or default) if v in levels] or default
-            return opts, value
-
-        @app.callback(
-            Output("par-order-store", "data"),
-            Input("par-levels", "value"),
-            State("par-order-store", "data"),
-        )
-        def _update_order_store(selected, current):
-            selected = [str(v) for v in (selected or [])]
-            if _is_numeric_levels(selected):
-                return _sorted_levels(selected)
-            # keep the dragged order of levels that stay selected, append new ones
-            kept = [v for v in (current or []) if v in selected]
-            return kept + [v for v in selected if v not in kept]
+            return _sorted_levels(meta[order_col].dropna().astype(str).unique())
 
         @app.callback(
             Output("par-order-list", "children"),
@@ -1968,7 +1924,7 @@ class ParallelConditionsModule:
                     meta=pd.DataFrame(),
                     order_col=order_col,
                     order_levels=[],
-                    rep_col=None,
+                    rep_cols=None,
                 )
             return gene_profile_biofilm_and_close_fig(
                 list(selected or []),
@@ -1978,8 +1934,8 @@ class ParallelConditionsModule:
                 meta_close=meta,
                 order_col=order_col,
                 order_levels=list(levels),
-                rep_col=rep_col if rep_col in meta_bio.columns else None,
-                cond_col=cond_col if cond_col in meta_bio.columns else None,
+                rep_cols=rep_col,
+                cond_col=cond_col,
                 results=results,
                 lookup=_PAR_RUNTIME.get("locus_lookup"),
             )
