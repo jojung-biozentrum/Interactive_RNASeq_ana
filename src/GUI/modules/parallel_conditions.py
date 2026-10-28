@@ -262,8 +262,8 @@ def _hydrate_par_from_cache(cache: dict | None, session_blob=None) -> bool:
             meta = session.metadata.reindex(X.index) if session.metadata is not None else None
             sub_col = cache.get("subset_col")
             sub_val = cache.get("subset_val")
-            if meta is not None and sub_col and sub_val is not None and sub_col in meta.columns:
-                is_bio = _subset_mask(meta, sub_col, str(sub_val)).reindex(X.index).fillna(False)
+            if meta is not None and sub_col and sub_val and sub_col in meta.columns:
+                is_bio = _subset_mask(meta, sub_col, sub_val).reindex(X.index).fillna(False)
     _PAR_RUNTIME.update(
         {
             "key": cache.get("key"),
@@ -1063,7 +1063,7 @@ class ParallelConditionsModule:
                         dbc.Col(
                             [
                                 html.Label("Subset value"),
-                                dcc.Dropdown(id="par-subset-val", clearable=True),
+                                dcc.Dropdown(id="par-subset-val", multi=True),
                             ],
                             md=2,
                         ),
@@ -1385,11 +1385,11 @@ class ParallelConditionsModule:
         def _fill_sub_val(col, session_blob, current):
             session = session_from_store(session_blob)
             if session.metadata is None or not col or col not in session.metadata.columns:
-                return [], None
+                return [], []
             levels = _natural_sorted(session.metadata[col].dropna().astype(str).unique())
             opts = [{"label": v, "value": v} for v in levels]
             prefer = next((v for v in levels if v.lower() in {"true", "1", "yes"}), None)
-            value = current if current in levels else (prefer or (levels[0] if levels else None))
+            value = [v for v in (current or []) if v in levels] or ([prefer] if prefer else levels[:1])
             return opts, value
 
         @app.callback(
@@ -1404,8 +1404,8 @@ class ParallelConditionsModule:
             if session.metadata is None or not order_col or order_col not in session.metadata.columns:
                 return []
             meta = session.metadata
-            if sub_col and sub_val is not None and sub_col in meta.columns:
-                meta = meta.loc[_subset_mask(meta, sub_col, str(sub_val))]
+            if sub_col and sub_val and sub_col in meta.columns:
+                meta = meta.loc[_subset_mask(meta, sub_col, sub_val)]
             return _sorted_levels(meta[order_col].dropna().astype(str).unique())
 
         @app.callback(
@@ -1425,13 +1425,13 @@ class ParallelConditionsModule:
             session = session_from_store(session_blob)
             if not session.ready:
                 return no_update, session.error or "Load a dataset first.", no_update
-            if not sub_col or sub_val is None or not order_col or not levels:
+            if not sub_col or not sub_val or not order_col or not levels:
                 return no_update, "Choose subset, level column, and at least two levels.", no_update
             levels = [str(x) for x in levels]
             if len(levels) < 2:
                 return no_update, "Need at least two levels.", no_update
             meta = session.metadata.copy()
-            is_bio = _subset_mask(meta, sub_col, str(sub_val))
+            is_bio = _subset_mask(meta, sub_col, sub_val)
             X = session.expression.copy()
             X.index = X.index.astype(str)
             meta = meta.reindex(X.index)
@@ -1466,7 +1466,7 @@ class ParallelConditionsModule:
                     "order_col": order_col,
                     "locus_lookup": lookup,
                     "subset_col": sub_col,
-                    "subset_val": str(sub_val),
+                    "subset_val": list(sub_val),
                 }
             )
             n_pcs = sum(
@@ -1481,7 +1481,7 @@ class ParallelConditionsModule:
                 "levels": levels,
                 "order_col": order_col,
                 "subset_col": sub_col,
-                "subset_val": str(sub_val),
+                "subset_val": list(sub_val),
                 "closest": {k: list(v) for k, v in closest.items()},
                 "level_detail": _pack_level_detail(level_detail),
                 "scores": _pack_score_df(score_df),

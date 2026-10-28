@@ -136,17 +136,22 @@ def _trajectory_keys(meta: pd.DataFrame, columns) -> pd.Series:
     return parts[0].str.cat(parts[1:], sep=" × ")
 
 
-def _subset_mask(meta: pd.DataFrame, column: str, value: str) -> pd.Series:
+def _subset_mask(meta: pd.DataFrame, column: str, values) -> pd.Series:
+    """Samples whose ``column`` equals any of ``values`` (a string or a list of strings)."""
     col = meta[column]
-    want = str(value).strip()
-    if want.lower() in {"true", "false"}:
-        want_bool = want.lower() == "true"
-        if col.dtype == bool or set(map(bool, col.dropna().unique())).issubset({True, False}):
-            try:
-                return col.astype(bool) == want_bool
-            except Exception:  # noqa: BLE001
-                pass
-    return col.astype(str) == want
+    mask = pd.Series(False, index=meta.index)
+    for value in [values] if isinstance(values, str) else values:
+        want = str(value).strip()
+        if want.lower() in {"true", "false"}:
+            want_bool = want.lower() == "true"
+            if col.dtype == bool or set(map(bool, col.dropna().unique())).issubset({True, False}):
+                try:
+                    mask |= col.astype(bool) == want_bool
+                    continue
+                except Exception:  # noqa: BLE001
+                    pass
+        mask |= col.astype(str) == want
+    return mask
 
 
 # Correlation measures:
@@ -665,9 +670,10 @@ def _compute_gradients(
     methods = list(_METHODS)
     meta = session.metadata.copy()
     meta.index = meta.index.astype(str)
-    meta_sub = meta.loc[_subset_mask(meta, subset_col, str(subset_val))]
+    subset_val = [str(v) for v in subset_val]
+    meta_sub = meta.loc[_subset_mask(meta, subset_col, subset_val)]
     if meta_sub.empty:
-        raise ValueError(f"No samples with {subset_col}={subset_val!r}.")
+        raise ValueError(f"No samples with {subset_col} in {subset_val}.")
 
     available = set(meta_sub[order_col].dropna().astype(str).unique().tolist())
     order_levels = [str(x) for x in (order_levels or []) if str(x) in available]
@@ -702,10 +708,10 @@ def _compute_gradients(
             lookup = None
     return {
         "key": repr(
-            (_active_dataset_name(session_blob), subset_col, str(subset_val), order_col, order_levels, rep_col)
+            (_active_dataset_name(session_blob), subset_col, subset_val, order_col, order_levels, rep_col)
         ),
         "subset_col": subset_col,
-        "subset_val": str(subset_val),
+        "subset_val": subset_val,
         "results": results,
         "methods": methods,
         "order_levels": order_levels,
@@ -771,7 +777,7 @@ class GeneGradientsModule:
                         dbc.Col(
                             [
                                 html.Label("Subset value"),
-                                dcc.Dropdown(id="grad-subset-val", clearable=True),
+                                dcc.Dropdown(id="grad-subset-val", multi=True),
                             ],
                             md=2,
                         ),
@@ -950,10 +956,10 @@ class GeneGradientsModule:
                 or session.metadata is None
                 or col not in session.metadata.columns
             ):
-                return [], None
+                return [], []
             vals = _natural_sorted(session.metadata[col].dropna().unique())
             opts = [{"label": v, "value": v} for v in vals]
-            default = "True" if "True" in vals else (vals[0] if vals else None)
+            default = ["True"] if "True" in vals else vals[:1]
             return opts, default
 
         @app.callback(
@@ -974,8 +980,8 @@ class GeneGradientsModule:
             ):
                 return []
             meta = session.metadata
-            if subset_col and subset_val is not None and subset_col in meta.columns:
-                meta = meta.loc[_subset_mask(meta, subset_col, str(subset_val))]
+            if subset_col and subset_val and subset_col in meta.columns:
+                meta = meta.loc[_subset_mask(meta, subset_col, subset_val)]
             return _sorted_levels(meta[order_col].dropna().unique())
 
         @app.callback(
@@ -1024,7 +1030,7 @@ class GeneGradientsModule:
                     hide,
                     *empty_mark,
                 )
-            if not subset_col or subset_val is None or not order_col:
+            if not subset_col or not subset_val or not order_col:
                 return (
                     no_update,
                     "Choose subset column/value and order column.",
@@ -1054,7 +1060,7 @@ class GeneGradientsModule:
                     "methods": state["methods"],
                     "order_levels": state["order_levels"],
                     "dataset": _active_dataset_name(session_blob),
-                    "subset": f"{subset_col}={subset_val}",
+                    "subset": f"{subset_col}={', '.join(state['subset_val'])}",
                     "order_col": order_col,
                 }
                 thr_styles = (show, show, show)
