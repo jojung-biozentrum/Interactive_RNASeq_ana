@@ -66,7 +66,6 @@ from .gene_gradients import (
     _level_positions,
     _level_tick_label,
     _natural_sorted,
-    _rep_selectors,
     _sorted_levels,
     _subset_mask,
     _trajectory_keys,
@@ -1059,7 +1058,7 @@ class ParallelConditionsModule:
                     [
                         dbc.Col(
                             [
-                                html.Label("Subset column (biofilm)"),
+                                html.Label("Subset column"),
                                 dcc.Dropdown(id="par-subset-col", clearable=True),
                             ],
                             md=3,
@@ -1085,11 +1084,16 @@ class ParallelConditionsModule:
                             ],
                             md=3,
                         ),
+                        dbc.Col(
+                            [
+                                html.Label("Replicate column"),
+                                dcc.Dropdown(id="par-rep-col", clearable=True),
+                            ],
+                            md=2,
+                        ),
                     ],
                     className="g-2 mb-2",
                 ),
-                # one replicate-column dropdown per selected subset value
-                dbc.Row(id="par-rep-container", className="g-2 mb-2"),
                 dcc.Store(id="par-order-store", data=[]),
                 dbc.Button("Run per-level clustering", id="par-run", color="primary", className="mb-2"),
                 html.Div(id="par-status", className="text-muted small mb-2"),
@@ -1321,7 +1325,7 @@ class ParallelConditionsModule:
                 html.H6("Selected gene profiles"),
                 html.P(
                     "Closest samples are grey; closest mean is black with std bars. "
-                    "Each selected subset value has its own replicate column; biofilm lines "
+                    "One replicate column applies to all subset values; biofilm lines "
                     "are split by subset value, replicate entry and condition.",
                     className="text-muted small",
                 ),
@@ -1351,16 +1355,18 @@ class ParallelConditionsModule:
             return opts, opts, sub, order
 
         @app.callback(
-            Output("par-rep-container", "children"),
-            Input("par-subset-val", "value"),
+            Output("par-rep-col", "options"),
+            Output("par-rep-col", "value"),
             Input("session-store", "data"),
-            State({"type": "par-rep", "value": ALL}, "value"),
-            State({"type": "par-rep", "value": ALL}, "id"),
+            State("par-rep-col", "value"),
         )
-        def _fill_par_rep(values, session_blob, cur_vals, cur_ids):
-            cols = list((session_blob or {}).get("meta_columns", []))
-            current = {i["value"]: v for i, v in zip(cur_ids, cur_vals)}
-            return _rep_selectors("par-rep", values or [], cols, current)
+        def _fill_par_rep(session_blob, current):
+            cols = [
+                c for c in (session_blob or {}).get("meta_columns", [])
+                if not str(c).startswith("_") and not (str(c).startswith("PC") and str(c)[2:].isdigit())
+            ]
+            default = "TechnicalReplicate" if "TechnicalReplicate" in cols else None
+            return [{"label": c, "value": c} for c in cols], current if current in cols else default
 
         @app.callback(
             Output("par-cond-col", "options"),
@@ -1924,14 +1930,14 @@ class ParallelConditionsModule:
             Output("par-grad-profiles", "figure"),
             Input("par-grad-selected", "data"),
             Input("par-grad-cache", "data"),
-            Input({"type": "par-rep", "value": ALL}, "value"),
-            Input({"type": "par-rep", "value": ALL}, "id"),
+            Input("par-rep-col", "value"),
             Input("par-cond-col", "value"),
+            State("par-subset-val", "value"),
             State("session-store", "data"),
             State("project-store", "data"),
         )
         def _par_profiles(
-            selected, cache, rep_cols, rep_ids, cond_col, session_blob, project_blob
+            selected, cache, rep_col, cond_col, subset_vals, session_blob, project_blob
         ):
             if not _ensure_par_grads(cache, session_blob, project_blob):
                 return gene_profile_grid_fig(
@@ -1943,7 +1949,7 @@ class ParallelConditionsModule:
                     subset_col=None,
                     rep_map=None,
                 )
-            rep_map = {i["value"]: c for i, c in zip(rep_ids, rep_cols) if c}
+            rep_map = {v: rep_col for v in (subset_vals or [])} if rep_col else {}
             results = _PAR_RUNTIME["grad_results"]
             return gene_profile_biofilm_and_close_fig(
                 list(selected or []),
