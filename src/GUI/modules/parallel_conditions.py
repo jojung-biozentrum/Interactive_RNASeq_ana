@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import uuid
 from dash import ALL, Dash, Input, Output, State, callback_context, dcc, html, no_update
 import dash_bootstrap_components as dbc
 import numpy as np
@@ -238,11 +239,16 @@ def _hydrate_par_from_cache(cache: dict | None, session_blob=None) -> bool:
     """Rebuild ``_PAR_RUNTIME`` from ``par-cache`` (+ session) for multi-worker use."""
     if not cache:
         return False
-    if isinstance(_PAR_RUNTIME.get("score_df"), pd.DataFrame) and _PAR_RUNTIME.get("closest"):
+    if (
+        isinstance(_PAR_RUNTIME.get("score_df"), pd.DataFrame)
+        and _PAR_RUNTIME.get("closest")
+        and _PAR_RUNTIME.get("key") == cache.get("key")
+    ):
         return True
     score_df = _unpack_score_df(cache)
     if score_df is None:
         return False
+    _PAR_RUNTIME.clear()  # leftovers belong to another run
     levels = list(cache.get("levels") or [])
     order_col = cache.get("order_col")
     closest = _closest_from_cache(cache)
@@ -260,14 +266,61 @@ def _hydrate_par_from_cache(cache: dict | None, session_blob=None) -> bool:
                 is_bio = _subset_mask(meta, sub_col, str(sub_val)).reindex(X.index).fillna(False)
     _PAR_RUNTIME.update(
         {
+            "key": cache.get("key"),
             "closest": closest,
             "level_detail": level_detail,
             "score_df": score_df,
             "levels": levels,
             "order_col": order_col,
-            "X": X if X is not None else _PAR_RUNTIME.get("X"),
-            "meta": meta if meta is not None else _PAR_RUNTIME.get("meta"),
-            "is_bio": is_bio if is_bio is not None else _PAR_RUNTIME.get("is_bio"),
+            "subset_col": cache.get("subset_col"),
+            "subset_val": cache.get("subset_val"),
+            "X": X,
+            "meta": meta,
+            "is_bio": is_bio,
+        }
+    )
+    return True
+
+
+def _ensure_par_grads(grad_cache: dict | None, session_blob=None, project_blob=None) -> bool:
+    """Rebuild the pooled-gradient part of ``_PAR_RUNTIME`` from ``par-grad-cache`` if missing."""
+    if not grad_cache or not grad_cache.get("results"):
+        return False
+    if _PAR_RUNTIME.get("grad_key") == grad_cache.get("key"):
+        return True
+    session = session_from_store(session_blob)
+    if not session.ready or session.expression is None:
+        return False
+    X = session.expression.copy()
+    X.index = X.index.astype(str)
+    meta_all = session.metadata.reindex(X.index)
+    order_col = grad_cache["order_col"]
+    close_ids = [s for s in grad_cache.get("close_sample_ids") or [] if s in X.index]
+    close_labs = list(grad_cache.get("close_labels") or [])[: len(close_ids)]
+    bio_ids = [s for s in grad_cache.get("bio_ids") or [] if s in X.index]
+    if not close_ids or not bio_ids:
+        return False
+    meta_close = meta_all.loc[close_ids].copy()
+    meta_close[order_col] = close_labs
+    meta_bio = meta_all.loc[bio_ids].copy()
+    meta_bio[order_col] = meta_bio[order_col].astype(str)
+    lookup = _PAR_RUNTIME.get("locus_lookup")
+    if lookup is None:
+        locus = _locus_path_from_session(session_blob, project_blob)
+        if locus:
+            try:
+                lookup = load_locus_lookup(locus)
+            except Exception:  # noqa: BLE001
+                lookup = None
+    _PAR_RUNTIME.update(
+        {
+            "grad_key": grad_cache.get("key"),
+            "grad_results": pd.DataFrame(grad_cache["results"]),
+            "grad_expr": X.loc[close_ids].T,
+            "grad_meta": meta_close,
+            "grad_expr_bio": X.loc[bio_ids].T,
+            "grad_meta_bio": meta_bio,
+            "locus_lookup": lookup,
         }
     )
     return True
@@ -1398,8 +1451,10 @@ class ParallelConditionsModule:
                     lookup = load_locus_lookup(locus)
                 except Exception:  # noqa: BLE001
                     lookup = None
+            run_key = uuid.uuid4().hex
             _PAR_RUNTIME.update(
                 {
+                    "key": run_key,
                     "summary": summary,
                     "closest": closest,
                     "level_detail": level_detail,
@@ -1420,6 +1475,7 @@ class ParallelConditionsModule:
                 if str(c).startswith("PC") and str(c)[2:].isdigit()
             )
             cache = {
+                "key": run_key,
                 "n_regions": len(levels),
                 "n_pcs": n_pcs,
                 "levels": levels,
@@ -1682,8 +1738,10 @@ class ParallelConditionsModule:
             _PAR_RUNTIME["grad_expr_bio"] = expr_bio
             _PAR_RUNTIME["grad_meta_bio"] = meta_bio
             _PAR_RUNTIME["grad_mode"] = "closest"
+            _PAR_RUNTIME["grad_key"] = uuid.uuid4().hex
             return (
                 {
+                    "key": _PAR_RUNTIME["grad_key"],
                     "n": len(samples),
                     "mode": "closest",
                     "n_genes": int(len(results)),
@@ -1705,12 +1763,14 @@ class ParallelConditionsModule:
             Input("par-grad-genes", "search_value"),
             Input("par-grad-genes", "value"),
             Input("par-grad-selected", "data"),
+            State("session-store", "data"),
+            State("project-store", "data"),
         )
-        def _par_grad_gene_options(cache, search, selected, clicked):
-            results = _PAR_RUNTIME.get("grad_results")
-            if results is None and cache and cache.get("results"):
-                results = pd.DataFrame(cache["results"])
-            if not cache or results is None or results.empty:
+        def _par_grad_gene_options(cache, search, selected, clicked, session_blob, project_blob):
+            if not _ensure_par_grads(cache, session_blob, project_blob):
+                return []
+            results = _PAR_RUNTIME["grad_results"]
+            if results.empty:
                 return []
             chosen = list(selected or []) + list(clicked or [])
             return gene_search_options(
@@ -1738,22 +1798,14 @@ class ParallelConditionsModule:
             cache, rho_p, dr_p, rho_s, dr_s, selected, session_blob, project_blob
         ):
             empty = go.Figure()
-            results = _PAR_RUNTIME.get("grad_results")
-            if results is None and cache and cache.get("results"):
-                results = pd.DataFrame(cache["results"])
-                _PAR_RUNTIME["grad_results"] = results
-            if not cache or results is None or results.empty:
+            if not _ensure_par_grads(cache, session_blob, project_blob):
+                return empty, empty, empty, empty
+            results = _PAR_RUNTIME["grad_results"]
+            if results.empty:
                 return empty, empty, empty, empty
             mark = {str(g) for g in (selected or []) if g}
             mode = cache.get("mode") or "closest"
             lookup = _PAR_RUNTIME.get("locus_lookup")
-            if lookup is None:
-                locus = _locus_path_from_session(session_blob, project_blob)
-                if locus:
-                    try:
-                        lookup = load_locus_lookup(locus)
-                    except Exception:  # noqa: BLE001
-                        lookup = None
             hover_map = gene_meta_hover_map(lookup)
             pearson = gradient_scatter_fig(
                 results,
@@ -1805,6 +1857,9 @@ class ParallelConditionsModule:
             Input("par-grad-genes", "value"),
             State("par-grad-selected", "data"),
             State("par-grad-gene-paste", "value"),
+            State("par-grad-cache", "data"),
+            State("session-store", "data"),
+            State("project-store", "data"),
             prevent_initial_call=True,
         )
         def _select_par_genes(
@@ -1817,12 +1872,16 @@ class ParallelConditionsModule:
             dropdown,
             selected,
             paste_text,
+            grad_cache,
+            session_blob,
+            project_blob,
         ):
             triggered = callback_context.triggered_id
             selected = list(selected or [])
             if triggered == "par-grad-clear":
                 return [], [], "", "Cleared selected genes."
             if triggered == "par-grad-gene-paste-add":
+                _ensure_par_grads(grad_cache, session_blob, project_blob)
                 results = _PAR_RUNTIME.get("grad_results")
                 have = (
                     set(results["geneID"].astype(str))
@@ -1868,55 +1927,27 @@ class ParallelConditionsModule:
             Input("par-grad-rep-col", "value"),
             Input("par-cond-col", "value"),
             State("session-store", "data"),
+            State("project-store", "data"),
         )
-        def _par_profiles(selected, cache, rep_col, cond_col, session_blob):
-            order_col = (cache or {}).get("order_col") or _PAR_RUNTIME.get("order_col") or "region"
-            levels = list((cache or {}).get("levels") or _PAR_RUNTIME.get("levels") or [])
-            results = _PAR_RUNTIME.get("grad_results")
-            if results is None and cache and cache.get("results"):
-                results = pd.DataFrame(cache["results"])
-            expr = _PAR_RUNTIME.get("grad_expr")
-            meta = _PAR_RUNTIME.get("grad_meta")
-            expr_bio = _PAR_RUNTIME.get("grad_expr_bio")
-            meta_bio = _PAR_RUNTIME.get("grad_meta_bio")
-            if (
-                (expr is None or meta is None or expr_bio is None or meta_bio is None)
-                and cache
-                and session_blob
-            ):
-                session = session_from_store(session_blob)
-                if session.ready and session.expression is not None:
-                    X = session.expression.copy()
-                    X.index = X.index.astype(str)
-                    meta_all = session.metadata.reindex(X.index) if session.metadata is not None else None
-                    close_ids = list(cache.get("close_sample_ids") or [])
-                    close_labs = list(cache.get("close_labels") or [])
-                    bio_ids = [s for s in (cache.get("bio_ids") or []) if s in X.index]
-                    close_ids = [s for s in close_ids if s in X.index]
-                    if close_ids and bio_ids and meta_all is not None:
-                        expr = X.loc[close_ids].T
-                        meta = meta_all.loc[close_ids].copy()
-                        meta[order_col] = close_labs[: len(close_ids)]
-                        expr_bio = X.loc[bio_ids].T
-                        meta_bio = meta_all.loc[bio_ids].copy()
-                        meta_bio[order_col] = meta_bio[order_col].astype(str)
-            if not cache or expr is None or meta is None or expr_bio is None or meta_bio is None:
+        def _par_profiles(selected, cache, rep_col, cond_col, session_blob, project_blob):
+            if not _ensure_par_grads(cache, session_blob, project_blob):
                 return gene_profile_grid_fig(
                     [],
                     expr=pd.DataFrame(),
                     meta=pd.DataFrame(),
-                    order_col=order_col,
+                    order_col="level",
                     order_levels=[],
                     rep_cols=None,
                 )
+            results = _PAR_RUNTIME["grad_results"]
             return gene_profile_biofilm_and_close_fig(
                 list(selected or []),
-                expr_bio=expr_bio,
-                meta_bio=meta_bio,
-                expr_close=expr,
-                meta_close=meta,
-                order_col=order_col,
-                order_levels=list(levels),
+                expr_bio=_PAR_RUNTIME["grad_expr_bio"],
+                meta_bio=_PAR_RUNTIME["grad_meta_bio"],
+                expr_close=_PAR_RUNTIME["grad_expr"],
+                meta_close=_PAR_RUNTIME["grad_meta"],
+                order_col=cache["order_col"],
+                order_levels=list(cache["levels"]),
                 rep_cols=rep_col,
                 cond_col=cond_col,
                 results=results,

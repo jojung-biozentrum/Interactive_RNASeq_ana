@@ -658,6 +658,92 @@ def _measure_col(method: str) -> dbc.Col:
     )
 
 
+def _compute_gradients(
+    session, session_blob, project_blob, subset_col, subset_val, order_col, order_levels, rep_col
+) -> dict:
+    """Run the gradients and return the runtime state (raises ValueError on bad input)."""
+    methods = list(_METHODS)
+    meta = session.metadata.copy()
+    meta.index = meta.index.astype(str)
+    meta_sub = meta.loc[_subset_mask(meta, subset_col, str(subset_val))]
+    if meta_sub.empty:
+        raise ValueError(f"No samples with {subset_col}={subset_val!r}.")
+
+    available = set(meta_sub[order_col].dropna().astype(str).unique().tolist())
+    order_levels = [str(x) for x in (order_levels or []) if str(x) in available]
+    if len(order_levels) < 2:
+        raise ValueError("Need at least two levels in the order column.")
+
+    expr = session.expression.T
+    expr.columns = expr.columns.astype(str)
+    samples = [s for s in meta_sub.index.astype(str) if s in expr.columns]
+    if len(samples) < 3:
+        raise ValueError("Fewer than 3 matching samples in the expression matrix.")
+    expr_sub = expr[samples]
+    meta_use = meta_sub.loc[samples]
+
+    results = gene_region_gradients(expr_sub, meta_use, order_col, order_levels, methods)
+    lookup = None
+    active = (session_blob or {}).get("active_datasets") or []
+    name = active[0] if active else None
+    entry = next(
+        (d for d in (project_blob or {}).get("datasets", []) if d.get("name") == name),
+        None,
+    )
+    locus = (entry or {}).get("locus_lookup") or ""
+    root = (project_blob or {}).get("root")
+    if locus:
+        path = Path(locus)
+        if root and not path.is_absolute():
+            path = Path(root) / path
+        try:
+            lookup = load_locus_lookup(path)
+        except Exception:  # noqa: BLE001
+            lookup = None
+    return {
+        "key": repr(
+            (_active_dataset_name(session_blob), subset_col, str(subset_val), order_col, order_levels, rep_col)
+        ),
+        "subset_col": subset_col,
+        "subset_val": str(subset_val),
+        "results": results,
+        "methods": methods,
+        "order_levels": order_levels,
+        "order_col": order_col,
+        "rep_col": rep_col,
+        "meta": meta_use,
+        "expr": expr_sub,
+        "locus_lookup": lookup,
+    }
+
+
+def _grad_runtime(cache, session_blob, project_blob) -> dict:
+    """Runtime state for ``cache``; rebuilt from its stored parameters if this worker lacks it."""
+    if not cache or "key" not in cache:
+        return {}
+    if _GRAD_RUNTIME.get("key") == cache["key"]:
+        return _GRAD_RUNTIME
+    session = session_from_store(session_blob)
+    if not session.ready:
+        return {}
+    try:
+        state = _compute_gradients(
+            session,
+            session_blob,
+            project_blob,
+            cache["subset_col"],
+            cache["subset_val"],
+            cache["order_col"],
+            cache["order_levels"],
+            cache["rep_col"],
+        )
+    except Exception:  # noqa: BLE001
+        return {}
+    _GRAD_RUNTIME.clear()
+    _GRAD_RUNTIME.update(state)
+    return _GRAD_RUNTIME
+
+
 class GeneGradientsModule:
     id = "gene-gradients"
     label = "Gene gradients"
@@ -949,94 +1035,24 @@ class GeneGradientsModule:
                     hide,
                     *empty_mark,
                 )
-            methods = list(_METHODS)
             try:
-                meta = session.metadata.copy()
-                meta.index = meta.index.astype(str)
-                mask = _subset_mask(meta, subset_col, str(subset_val))
-                meta_sub = meta.loc[mask]
-                if meta_sub.empty:
-                    return (
-                        no_update,
-                        f"No samples with {subset_col}={subset_val!r}.",
-                        no_update,
-                        no_update,
-                        hide,
-                        hide,
-                        hide,
-                        *empty_mark,
-                    )
-
-                available = set(meta_sub[order_col].dropna().astype(str).unique().tolist())
-                order_levels = [str(x) for x in (order_levels or []) if str(x) in available]
-                if len(order_levels) < 2:
-                    return (
-                        no_update,
-                        "Need at least two ordered levels (drag to reorder).",
-                        no_update,
-                        no_update,
-                        hide,
-                        hide,
-                        hide,
-                        *empty_mark,
-                    )
-
-                expr = session.expression.T
-                expr.columns = expr.columns.astype(str)
-                samples = [s for s in meta_sub.index.astype(str) if s in expr.columns]
-                if len(samples) < 3:
-                    return (
-                        no_update,
-                        "Fewer than 3 matching samples in the expression matrix.",
-                        no_update,
-                        no_update,
-                        hide,
-                        hide,
-                        hide,
-                        *empty_mark,
-                    )
-                expr_sub = expr[samples]
-                meta_use = meta_sub.loc[samples]
-
-                results = gene_region_gradients(
-                    expr_sub, meta_use, order_col, order_levels, methods
+                state = _compute_gradients(
+                    session, session_blob, project_blob,
+                    subset_col, subset_val, order_col, order_levels, rep_col,
                 )
-                lookup = None
-                active = (session_blob or {}).get("active_datasets") or []
-                name = active[0] if active else None
-                entry = next(
-                    (
-                        d
-                        for d in (project_blob or {}).get("datasets", [])
-                        if d.get("name") == name
-                    ),
-                    None,
-                )
-                locus = (entry or {}).get("locus_lookup") or ""
-                root = (project_blob or {}).get("root")
-                if locus:
-                    path = Path(locus)
-                    if root and not path.is_absolute():
-                        path = Path(root) / path
-                    try:
-                        lookup = load_locus_lookup(path)
-                    except Exception:  # noqa: BLE001
-                        lookup = None
-
                 _GRAD_RUNTIME.clear()
-                _GRAD_RUNTIME["results"] = results
-                _GRAD_RUNTIME["methods"] = methods
-                _GRAD_RUNTIME["order_levels"] = order_levels
-                _GRAD_RUNTIME["order_col"] = order_col
-                _GRAD_RUNTIME["rep_col"] = rep_col
-                _GRAD_RUNTIME["meta"] = meta_use
-                _GRAD_RUNTIME["expr"] = expr_sub
-                _GRAD_RUNTIME["locus_lookup"] = lookup
+                _GRAD_RUNTIME.update(state)
+                results, expr_sub, lookup = state["results"], state["expr"], state["locus_lookup"]
+                # parameters are stored so any worker can rebuild the runtime (_grad_runtime)
                 cache = {
+                    "key": state["key"],
+                    "subset_col": state["subset_col"],
+                    "subset_val": state["subset_val"],
+                    "rep_col": rep_col,
                     "n_genes": int(len(results)),
                     "n_samples": int(expr_sub.shape[1]),
-                    "methods": methods,
-                    "order_levels": order_levels,
+                    "methods": state["methods"],
+                    "order_levels": state["order_levels"],
                     "dataset": _active_dataset_name(session_blob),
                     "subset": f"{subset_col}={subset_val}",
                     "order_col": order_col,
@@ -1066,6 +1082,8 @@ class GeneGradientsModule:
                     mark_opts,
                     None,
                 )
+            except ValueError as exc:
+                return (no_update, str(exc), no_update, no_update, hide, hide, hide, *empty_mark)
             except Exception as exc:  # noqa: BLE001
                 _GRAD_RUNTIME.clear()
                 return (
@@ -1098,6 +1116,8 @@ class GeneGradientsModule:
             Input("grad-mark-col", "value"),
             Input("grad-mark-entry", "value"),
             Input("grad-selected-genes", "data"),
+            State("session-store", "data"),
+            State("project-store", "data"),
         )
         def _replot(
             cache,
@@ -1110,9 +1130,12 @@ class GeneGradientsModule:
             mark_col,
             mark_entry,
             selected_genes,
+            session_blob,
+            project_blob,
         ):
             empty = go.Figure()
-            results = _GRAD_RUNTIME.get("results")
+            rt = _grad_runtime(cache, session_blob, project_blob)
+            results = rt.get("results")
             if not cache or results is None or not isinstance(results, pd.DataFrame):
                 return empty, empty, empty, empty, empty, empty
             methods = list(_METHODS)
@@ -1134,7 +1157,7 @@ class GeneGradientsModule:
             subset = cache.get("subset") or ""
             order_col = cache.get("order_col") or "order"
             meta_mark = genes_with_meta_entry(
-                _GRAD_RUNTIME.get("locus_lookup"),
+                rt.get("locus_lookup"),
                 mark_col,
                 mark_entry,
             )
@@ -1149,7 +1172,7 @@ class GeneGradientsModule:
                 mark_label = "selected"
             else:
                 mark_label = None
-            hover_map = gene_meta_hover_map(_GRAD_RUNTIME.get("locus_lookup"))
+            hover_map = gene_meta_hover_map(rt.get("locus_lookup"))
 
             measure_figs = []
             for method in methods:
@@ -1204,11 +1227,15 @@ class GeneGradientsModule:
             Output("grad-mark-entry", "placeholder"),
             Input("grad-mark-col", "value"),
             State("grad-cache", "data"),
+            State("session-store", "data"),
+            State("project-store", "data"),
         )
-        def _mark_entries(col, cache):
+        def _mark_entries(col, cache, session_blob, project_blob):
             if not cache or not col:
                 return [], None, True, "Select a column first…"
-            opts = entry_dropdown_options(_GRAD_RUNTIME.get("locus_lookup"), col)
+            opts = entry_dropdown_options(
+                _grad_runtime(cache, session_blob, project_blob).get("locus_lookup"), col
+            )
             return opts, None, False, "Entry…"
 
         @app.callback(
@@ -1217,9 +1244,12 @@ class GeneGradientsModule:
             Input("grad-gene-search", "search_value"),
             Input("grad-gene-search", "value"),
             Input("grad-selected-genes", "data"),
+            State("session-store", "data"),
+            State("project-store", "data"),
         )
-        def _gene_search_opts(cache, search, dropdown, selected):
-            results = _GRAD_RUNTIME.get("results")
+        def _gene_search_opts(cache, search, dropdown, selected, session_blob, project_blob):
+            rt = _grad_runtime(cache, session_blob, project_blob)
+            results = rt.get("results")
             if results is None or not isinstance(results, pd.DataFrame) or results.empty:
                 return []
             chosen = list(selected or []) + list(dropdown or [])
@@ -1227,7 +1257,7 @@ class GeneGradientsModule:
                 results["geneID"].astype(str),
                 search,
                 chosen,
-                lookup=_GRAD_RUNTIME.get("locus_lookup"),
+                lookup=rt.get("locus_lookup"),
             )
 
         @app.callback(
@@ -1247,6 +1277,9 @@ class GeneGradientsModule:
             Input("grad-gene-search", "value"),
             State("grad-selected-genes", "data"),
             State("grad-gene-paste", "value"),
+            State("grad-cache", "data"),
+            State("session-store", "data"),
+            State("project-store", "data"),
             prevent_initial_call=True,
         )
         def _select_genes(
@@ -1261,13 +1294,16 @@ class GeneGradientsModule:
             dropdown,
             selected,
             paste_text,
+            cache,
+            session_blob,
+            project_blob,
         ):
             triggered = callback_context.triggered_id
             selected = list(selected or [])
             if triggered == "grad-profiles-clear":
                 return [], [], "", None, "Cleared selected genes."
             if triggered == "grad-gene-paste-add":
-                results = _GRAD_RUNTIME.get("results")
+                results = _grad_runtime(cache, session_blob, project_blob).get("results")
                 have = (
                     set(results["geneID"].astype(str))
                     if isinstance(results, pd.DataFrame) and not results.empty
@@ -1322,24 +1358,30 @@ class GeneGradientsModule:
             Output("grad-gene-detail", "children"),
             Input("grad-last-gene", "data"),
             Input("grad-cache", "data"),
+            State("session-store", "data"),
+            State("project-store", "data"),
         )
-        def _gene_meta_table(last_gene, cache):
+        def _gene_meta_table(last_gene, cache, session_blob, project_blob):
             if not last_gene:
                 return gene_detail_placeholder()
-            return gene_detail_table(str(last_gene), _GRAD_RUNTIME.get("locus_lookup"))
+            lookup = _grad_runtime(cache, session_blob, project_blob).get("locus_lookup")
+            return gene_detail_table(str(last_gene), lookup)
 
         @app.callback(
             Output("grad-profiles-grid", "figure"),
             Input("grad-selected-genes", "data"),
             Input("grad-cache", "data"),
+            State("session-store", "data"),
+            State("project-store", "data"),
         )
-        def _profiles(selected, cache):
-            results = _GRAD_RUNTIME.get("results")
-            expr = _GRAD_RUNTIME.get("expr")
-            meta = _GRAD_RUNTIME.get("meta")
-            order_levels = list(_GRAD_RUNTIME.get("order_levels") or [])
-            order_col = _GRAD_RUNTIME.get("order_col")
-            rep_col = _GRAD_RUNTIME.get("rep_col")
+        def _profiles(selected, cache, session_blob, project_blob):
+            rt = _grad_runtime(cache, session_blob, project_blob)
+            results = rt.get("results")
+            expr = rt.get("expr")
+            meta = rt.get("meta")
+            order_levels = list(rt.get("order_levels") or [])
+            order_col = rt.get("order_col")
+            rep_col = rt.get("rep_col")
             if (
                 expr is None
                 or meta is None
@@ -1363,6 +1405,6 @@ class GeneGradientsModule:
                 order_levels=order_levels,
                 rep_cols=rep_col,
                 results=results if isinstance(results, pd.DataFrame) else None,
-                lookup=_GRAD_RUNTIME.get("locus_lookup"),
+                lookup=rt.get("locus_lookup"),
             )
 
