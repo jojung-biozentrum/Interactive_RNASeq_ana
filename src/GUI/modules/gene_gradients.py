@@ -136,26 +136,6 @@ def _trajectory_keys(meta: pd.DataFrame, columns) -> pd.Series:
     return parts[0].str.cat(parts[1:], sep=" × ")
 
 
-def _order_list(levels):
-    """Children for a level-order list; draggable only for categorical levels."""
-    levels = list(levels or [])
-    if not levels:
-        return html.P(
-            "No levels — choose order column / subset.",
-            className="text-muted small mb-0",
-        )
-    numeric = _is_numeric_levels(levels)
-    return [
-        html.Div(
-            level if numeric else f"{i + 1}. {level}",
-            className="grad-ord-item",
-            draggable="false" if numeric else "true",
-            **{"data-level": level},
-        )
-        for i, level in enumerate(levels)
-    ]
-
-
 def _subset_mask(meta: pd.DataFrame, column: str, value: str) -> pd.Series:
     col = meta[column]
     want = str(value).strip()
@@ -726,35 +706,12 @@ class GeneGradientsModule:
                     ],
                     className="g-2 mb-2",
                 ),
-                dbc.Row(
-                    [
-                        dbc.Col(
-                            [
-                                html.Label(
-                                    "Level order (categorical: drag to reorder, ranks 1, 2, …; "
-                                    "numeric: sorted by value, value used as x)"
-                                ),
-                                html.Div(
-                                    id="grad-order-list",
-                                    className="border rounded p-2 bg-light",
-                                    **{"data-store": "grad-order-store"},
-                                ),
-                                dcc.Store(id="grad-order-store", data=[]),
-                            ],
-                            md=8,
-                        ),
-                        dbc.Col(
-                            dbc.Button(
-                                "Run gradients",
-                                id="grad-run",
-                                color="primary",
-                                className="mt-4",
-                            ),
-                            md=4,
-                            className="d-flex align-items-start",
-                        ),
-                    ],
-                    className="g-2 mb-2",
+                dcc.Store(id="grad-order-store", data=[]),
+                dbc.Button(
+                    "Run gradients",
+                    id="grad-run",
+                    color="primary",
+                    className="mb-2",
                 ),
                 html.Div(id="grad-status", className="text-muted small mb-2"),
                 mark_controls(
@@ -936,13 +893,6 @@ class GeneGradientsModule:
             return _sorted_levels(meta[order_col].dropna().unique())
 
         @app.callback(
-            Output("grad-order-list", "children"),
-            Input("grad-order-store", "data"),
-        )
-        def _render_order_list(levels):
-            return _order_list(levels)
-
-        @app.callback(
             Output("grad-cache", "data", allow_duplicate=True),
             Output("grad-status", "children"),
             Output("grad-selected-genes", "data", allow_duplicate=True),
@@ -1100,7 +1050,7 @@ class GeneGradientsModule:
                     html.Span(
                         [
                             f"Gradients done: {len(results)} genes × {expr_sub.shape[1]} samples; "
-                            f"levels {order_levels}; Pearson / Spearman / Kendall. "
+                            "Pearson / Spearman / Kendall. "
                             "Set thresholds under each plot. ",
                             html.Strong(
                                 "Select genes for profiles and metadata information."

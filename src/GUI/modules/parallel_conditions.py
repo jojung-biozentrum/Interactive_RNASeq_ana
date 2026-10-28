@@ -65,7 +65,6 @@ from .gene_gradients import (
     _level_positions,
     _level_tick_label,
     _natural_sorted,
-    _order_list,
     _sorted_levels,
     _subset_mask,
     _trajectory_keys,
@@ -995,7 +994,7 @@ class ParallelConditionsModule:
         return html.Div(
             [
                 html.P(
-                    "Pick the biofilm subset, the level column, and the level order. "
+                    "Pick the biofilm subset and the order column (levels are ordered automatically). "
                     "Each level is clustered with all non-subset samples.",
                     className="text-muted small",
                 ),
@@ -1038,15 +1037,6 @@ class ParallelConditionsModule:
                         ),
                     ],
                     className="g-2 mb-2",
-                ),
-                html.Label(
-                    "Level order (categorical: drag to reorder, ranks 1, 2, …; "
-                    "numeric: sorted by value, value used as x)"
-                ),
-                html.Div(
-                    id="par-order-list",
-                    className="border rounded p-2 bg-light mb-2",
-                    **{"data-store": "par-order-store"},
                 ),
                 dcc.Store(id="par-order-store", data=[]),
                 dbc.Button("Run per-level clustering", id="par-run", color="primary", className="mb-2"),
@@ -1364,13 +1354,6 @@ class ParallelConditionsModule:
             if sub_col and sub_val is not None and sub_col in meta.columns:
                 meta = meta.loc[_subset_mask(meta, sub_col, str(sub_val))]
             return _sorted_levels(meta[order_col].dropna().astype(str).unique())
-
-        @app.callback(
-            Output("par-order-list", "children"),
-            Input("par-order-store", "data"),
-        )
-        def _render_order_list(levels):
-            return _order_list(levels)
 
         @app.callback(
             Output("par-cache", "data", allow_duplicate=True),
