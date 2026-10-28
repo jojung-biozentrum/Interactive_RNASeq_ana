@@ -10,7 +10,7 @@ from dash import Dash
 _CONFIG_KEY = "INTERACTIVE_RNASEQ_MODE"
 
 # Lab data folder for gunicorn / default CLI.
-DATA_ROOT = "/home/lab/data/Johannes/biofilm-microenvironments2"
+DATA_ROOT = "/home/lab/data/Johannes/1_biofilmMicroenvironments/1.1_RNASeq/1.1.1_Screen_1_2_Jun"
 SERVER_DEFAULT_DATA_ROOT = DATA_ROOT
 
 
