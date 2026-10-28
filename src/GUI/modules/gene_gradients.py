@@ -6,7 +6,7 @@ import math
 import re
 from pathlib import Path
 
-from dash import Dash, Input, Output, State, callback_context, dcc, html, no_update
+from dash import ALL, Dash, Input, Output, State, callback_context, dcc, html, no_update
 import dash_bootstrap_components as dbc
 import numpy as np
 import pandas as pd
@@ -128,12 +128,47 @@ def _level_positions(order_levels) -> dict[str, float]:
     return {lv: float(i) for i, lv in enumerate(order_levels, start=1)}
 
 
-def _trajectory_keys(meta: pd.DataFrame, columns) -> pd.Series:
-    """One label per sample from the unique combination of ``columns`` ("all" if none)."""
-    parts = [meta[c].astype(str) for c in (columns or []) if c in meta.columns]
-    if not parts:
-        return pd.Series("all", index=meta.index)
-    return parts[0].str.cat(parts[1:], sep=" × ")
+def _trajectory_keys(
+    meta: pd.DataFrame, subset_col: str | None, rep_map: dict | None, cond_col: str | None = None
+) -> pd.Series:
+    """Label per sample: "<subset value> / <entry of that value's replicate column>[ / condition]"."""
+    keys = (
+        meta[subset_col].astype(str)
+        if subset_col in meta.columns
+        else pd.Series("all", index=meta.index)
+    )
+    base = keys.copy()
+    for value, col in (rep_map or {}).items():
+        rows = base == value
+        if col in meta.columns and rows.any():
+            keys[rows] = value + " / " + meta.loc[rows, col].astype(str)
+    if cond_col in meta.columns:
+        keys = keys + " / " + meta[cond_col].astype(str)
+    return keys
+
+
+def _rep_selectors(kind: str, values, columns, current: dict):
+    """One replicate-column dropdown per subset value (pattern-matching ids ``kind``)."""
+    cols = [
+        c for c in columns
+        if not str(c).startswith("_") and not (str(c).startswith("PC") and str(c)[2:].isdigit())
+    ]
+    default = "TechnicalReplicate" if "TechnicalReplicate" in cols else None
+    return [
+        dbc.Col(
+            [
+                html.Label(f"Replicate column for {v}"),
+                dcc.Dropdown(
+                    id={"type": kind, "value": v},
+                    options=[{"label": c, "value": c} for c in cols],
+                    value=current.get(v, default),
+                    clearable=True,
+                ),
+            ],
+            md=3,
+        )
+        for v in values
+    ]
 
 
 def _subset_mask(meta: pd.DataFrame, column: str, values) -> pd.Series:
@@ -444,7 +479,8 @@ def gene_profile_grid_fig(
     meta: pd.DataFrame,
     order_col: str,
     order_levels: list[str],
-    rep_cols: list[str] | None,
+    subset_col: str | None,
+    rep_map: dict | None,
     results: pd.DataFrame | None = None,
     lookup: pd.DataFrame | None = None,
 ) -> go.Figure:
@@ -500,7 +536,7 @@ def gene_profile_grid_fig(
     x_pos = [positions[lv] for lv in order_levels]
     x_labels = [_level_tick_label(lv) for lv in order_levels]
 
-    keys = _trajectory_keys(meta, rep_cols)
+    keys = _trajectory_keys(meta, subset_col, rep_map)
     replicates = _natural_sorted(keys.unique())
 
     legend_done: set[str] = set()
@@ -664,7 +700,7 @@ def _measure_col(method: str) -> dbc.Col:
 
 
 def _compute_gradients(
-    session, session_blob, project_blob, subset_col, subset_val, order_col, order_levels, rep_col
+    session, session_blob, project_blob, subset_col, subset_val, order_col, order_levels, rep_map
 ) -> dict:
     """Run the gradients and return the runtime state (raises ValueError on bad input)."""
     methods = list(_METHODS)
@@ -708,7 +744,7 @@ def _compute_gradients(
             lookup = None
     return {
         "key": repr(
-            (_active_dataset_name(session_blob), subset_col, subset_val, order_col, order_levels, rep_col)
+            (_active_dataset_name(session_blob), subset_col, subset_val, order_col, order_levels, sorted(rep_map.items()))
         ),
         "subset_col": subset_col,
         "subset_val": subset_val,
@@ -716,7 +752,7 @@ def _compute_gradients(
         "methods": methods,
         "order_levels": order_levels,
         "order_col": order_col,
-        "rep_col": rep_col,
+        "rep_map": rep_map,
         "meta": meta_use,
         "expr": expr_sub,
         "locus_lookup": lookup,
@@ -741,7 +777,7 @@ def _grad_runtime(cache, session_blob, project_blob) -> dict:
             cache["subset_val"],
             cache["order_col"],
             cache["order_levels"],
-            cache["rep_col"],
+            cache["rep_map"],
         )
     except Exception:  # noqa: BLE001
         return {}
@@ -779,23 +815,21 @@ class GeneGradientsModule:
                                 html.Label("Subset value"),
                                 dcc.Dropdown(id="grad-subset-val", multi=True),
                             ],
-                            md=2,
+                            md=5,
                         ),
                         dbc.Col(
                             [
                                 html.Label("Order column"),
                                 dcc.Dropdown(id="grad-order-col", clearable=True),
                             ],
-                            md=3,
-                        ),
-                        dbc.Col(
-                            [
-                                html.Label("Replicate column(s) — unique combination = one trajectory"),
-                                dcc.Dropdown(id="grad-rep-col", multi=True),
-                            ],
-                            md=3,
+                            md=4,
                         ),
                     ],
+                    className="g-2 mb-2",
+                ),
+                # one replicate-column dropdown per selected subset value
+                dbc.Row(
+                    id="grad-rep-container",
                     className="g-2 mb-2",
                 ),
                 dcc.Store(id="grad-order-store", data=[]),
@@ -914,16 +948,14 @@ class GeneGradientsModule:
         @app.callback(
             Output("grad-subset-col", "options"),
             Output("grad-order-col", "options"),
-            Output("grad-rep-col", "options"),
             Output("grad-subset-col", "value"),
             Output("grad-order-col", "value"),
-            Output("grad-rep-col", "value"),
             Input("session-store", "data"),
         )
         def _fill_meta_cols(session_blob):
             session = session_from_store(session_blob)
             if not session.ready or session.metadata is None:
-                return [], [], [], None, None, []
+                return [], [], None, None
             cols = [
                 c
                 for c in session.meta_columns()
@@ -939,8 +971,19 @@ class GeneGradientsModule:
             )
             if order is None and cols:
                 order = cols[min(1, len(cols) - 1)]
-            rep = ["TechnicalReplicate"] if "TechnicalReplicate" in cols else []
-            return opts, opts, opts, subset, order, rep
+            return opts, opts, subset, order
+
+        @app.callback(
+            Output("grad-rep-container", "children"),
+            Input("grad-subset-val", "value"),
+            Input("session-store", "data"),
+            State({"type": "grad-rep", "value": ALL}, "value"),
+            State({"type": "grad-rep", "value": ALL}, "id"),
+        )
+        def _rep_dropdowns(values, session_blob, cur_vals, cur_ids):
+            cols = list((session_blob or {}).get("meta_columns", []))
+            current = {i["value"]: v for i, v in zip(cur_ids, cur_vals)}
+            return _rep_selectors("grad-rep", values or [], cols, current)
 
         @app.callback(
             Output("grad-subset-val", "options"),
@@ -1002,7 +1045,8 @@ class GeneGradientsModule:
             State("grad-subset-val", "value"),
             State("grad-order-col", "value"),
             State("grad-order-store", "data"),
-            State("grad-rep-col", "value"),
+            State({"type": "grad-rep", "value": ALL}, "value"),
+            State({"type": "grad-rep", "value": ALL}, "id"),
             prevent_initial_call=True,
         )
         def _run(
@@ -1013,8 +1057,10 @@ class GeneGradientsModule:
             subset_val,
             order_col,
             order_levels,
-            rep_col,
+            rep_cols,
+            rep_ids,
         ):
+            rep_map = {i["value"]: c for i, c in zip(rep_ids, rep_cols) if c}
             hide = {"display": "none"}
             show = {"display": "block"}
             empty_mark = (hide, [], None)
@@ -1044,7 +1090,7 @@ class GeneGradientsModule:
             try:
                 state = _compute_gradients(
                     session, session_blob, project_blob,
-                    subset_col, subset_val, order_col, order_levels, rep_col,
+                    subset_col, subset_val, order_col, order_levels, rep_map,
                 )
                 _GRAD_RUNTIME.clear()
                 _GRAD_RUNTIME.update(state)
@@ -1054,7 +1100,7 @@ class GeneGradientsModule:
                     "key": state["key"],
                     "subset_col": state["subset_col"],
                     "subset_val": state["subset_val"],
-                    "rep_col": rep_col,
+                    "rep_map": rep_map,
                     "n_genes": int(len(results)),
                     "n_samples": int(expr_sub.shape[1]),
                     "methods": state["methods"],
@@ -1387,7 +1433,8 @@ class GeneGradientsModule:
             meta = rt.get("meta")
             order_levels = list(rt.get("order_levels") or [])
             order_col = rt.get("order_col")
-            rep_col = rt.get("rep_col")
+            subset_col = rt.get("subset_col")
+            rep_map = rt.get("rep_map")
             if (
                 expr is None
                 or meta is None
@@ -1400,7 +1447,8 @@ class GeneGradientsModule:
                     meta=pd.DataFrame(),
                     order_col="level",
                     order_levels=[],
-                    rep_cols=None,
+                    subset_col=None,
+                    rep_map=None,
                     results=None,
                 )
             return gene_profile_grid_fig(
@@ -1409,7 +1457,8 @@ class GeneGradientsModule:
                 meta=meta,
                 order_col=str(order_col),
                 order_levels=order_levels,
-                rep_cols=rep_col,
+                subset_col=subset_col,
+                rep_map=rep_map,
                 results=results if isinstance(results, pd.DataFrame) else None,
                 lookup=rt.get("locus_lookup"),
             )

@@ -66,6 +66,7 @@ from .gene_gradients import (
     _level_positions,
     _level_tick_label,
     _natural_sorted,
+    _rep_selectors,
     _sorted_levels,
     _subset_mask,
     _trajectory_keys,
@@ -763,7 +764,8 @@ def gene_profile_biofilm_and_close_fig(
     meta_close: pd.DataFrame,
     order_col: str,
     order_levels: list[str],
-    rep_cols: list[str] | None,
+    subset_col: str | None,
+    rep_map: dict | None,
     cond_col: str | None = None,
     results: pd.DataFrame | None = None,
     lookup: pd.DataFrame | None = None,
@@ -778,7 +780,8 @@ def gene_profile_biofilm_and_close_fig(
             meta=pd.DataFrame(),
             order_col=order_col,
             order_levels=order_levels,
-            rep_cols=None,
+            subset_col=None,
+            rep_map=None,
         )
     n = len(genes)
     n_cols = _PROFILE_COLS
@@ -804,10 +807,9 @@ def gene_profile_biofilm_and_close_fig(
     positions = _level_positions(order_levels)
     x_pos = [positions[lv] for lv in order_levels]
     x_labels = [_level_tick_label(lv) for lv in order_levels]
-    # trajectories = replicate × condition
-    traj_cols = [*(rep_cols or []), *([cond_col] if cond_col else [])]
-    bio_keys = _trajectory_keys(meta_bio, traj_cols)
-    close_keys = _trajectory_keys(meta_close, traj_cols)
+    # trajectories = subset value / replicate entry / condition
+    bio_keys = _trajectory_keys(meta_bio, subset_col, rep_map, cond_col)
+    close_keys = _trajectory_keys(meta_close, subset_col, rep_map, cond_col)
     replicates = _natural_sorted(bio_keys.unique())
     legend_done: set[str] = set()
     for gi, gene in enumerate(genes):
@@ -1076,21 +1078,16 @@ class ParallelConditionsModule:
                         ),
                         dbc.Col(
                             [
-                                html.Label("Replicate column(s) — unique combination = one trajectory"),
-                                dcc.Dropdown(id="par-grad-rep-col", multi=True),
-                            ],
-                            md=3,
-                        ),
-                        dbc.Col(
-                            [
                                 html.Label("Condition number column"),
                                 dcc.Dropdown(id="par-cond-col", clearable=True),
                             ],
-                            md=2,
+                            md=3,
                         ),
                     ],
                     className="g-2 mb-2",
                 ),
+                # one replicate-column dropdown per selected subset value
+                dbc.Row(id="par-rep-container", className="g-2 mb-2"),
                 dcc.Store(id="par-order-store", data=[]),
                 dbc.Button("Run per-level clustering", id="par-run", color="primary", className="mb-2"),
                 html.Div(id="par-status", className="text-muted small mb-2"),
@@ -1322,8 +1319,8 @@ class ParallelConditionsModule:
                 html.H6("Selected gene profiles"),
                 html.P(
                     "Closest samples are grey; closest mean is black with std bars. "
-                    "Replicate column is optional — if set, biofilm lines are split by "
-                    "that column.",
+                    "Each selected subset value has its own replicate column; biofilm lines "
+                    "are split by subset value, replicate entry and condition.",
                     className="text-muted small",
                 ),
                 dcc.Graph(
@@ -1352,16 +1349,16 @@ class ParallelConditionsModule:
             return opts, opts, sub, order
 
         @app.callback(
-            Output("par-grad-rep-col", "options"),
-            Output("par-grad-rep-col", "value"),
+            Output("par-rep-container", "children"),
+            Input("par-subset-val", "value"),
             Input("session-store", "data"),
-            State("par-grad-rep-col", "value"),
+            State({"type": "par-rep", "value": ALL}, "value"),
+            State({"type": "par-rep", "value": ALL}, "id"),
         )
-        def _fill_par_rep(session_blob, current):
+        def _fill_par_rep(values, session_blob, cur_vals, cur_ids):
             cols = list((session_blob or {}).get("meta_columns", []))
-            opts = [{"label": c, "value": c} for c in cols]
-            kept = [c for c in (current or []) if c in cols]
-            return opts, kept or (["TechnicalReplicate"] if "TechnicalReplicate" in cols else [])
+            current = {i["value"]: v for i, v in zip(cur_ids, cur_vals)}
+            return _rep_selectors("par-rep", values or [], cols, current)
 
         @app.callback(
             Output("par-cond-col", "options"),
@@ -1742,6 +1739,7 @@ class ParallelConditionsModule:
             return (
                 {
                     "key": _PAR_RUNTIME["grad_key"],
+                    "subset_col": _PAR_RUNTIME.get("subset_col"),
                     "n": len(samples),
                     "mode": "closest",
                     "n_genes": int(len(results)),
@@ -1924,12 +1922,15 @@ class ParallelConditionsModule:
             Output("par-grad-profiles", "figure"),
             Input("par-grad-selected", "data"),
             Input("par-grad-cache", "data"),
-            Input("par-grad-rep-col", "value"),
+            Input({"type": "par-rep", "value": ALL}, "value"),
+            Input({"type": "par-rep", "value": ALL}, "id"),
             Input("par-cond-col", "value"),
             State("session-store", "data"),
             State("project-store", "data"),
         )
-        def _par_profiles(selected, cache, rep_col, cond_col, session_blob, project_blob):
+        def _par_profiles(
+            selected, cache, rep_cols, rep_ids, cond_col, session_blob, project_blob
+        ):
             if not _ensure_par_grads(cache, session_blob, project_blob):
                 return gene_profile_grid_fig(
                     [],
@@ -1937,8 +1938,10 @@ class ParallelConditionsModule:
                     meta=pd.DataFrame(),
                     order_col="level",
                     order_levels=[],
-                    rep_cols=None,
+                    subset_col=None,
+                    rep_map=None,
                 )
+            rep_map = {i["value"]: c for i, c in zip(rep_ids, rep_cols) if c}
             results = _PAR_RUNTIME["grad_results"]
             return gene_profile_biofilm_and_close_fig(
                 list(selected or []),
@@ -1948,7 +1951,8 @@ class ParallelConditionsModule:
                 meta_close=_PAR_RUNTIME["grad_meta"],
                 order_col=cache["order_col"],
                 order_levels=list(cache["levels"]),
-                rep_cols=rep_col,
+                subset_col=cache.get("subset_col"),
+                rep_map=rep_map,
                 cond_col=cond_col,
                 results=results,
                 lookup=_PAR_RUNTIME.get("locus_lookup"),
