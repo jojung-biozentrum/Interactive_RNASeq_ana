@@ -719,11 +719,9 @@ def build_scatter(
             ]
             category_orders[use_shape_col] = cats
 
-        if use_size_col and not pd.api.types.is_numeric_dtype(plot_df[use_size_col]):
-            raw = plot_df[use_size_col]
-            plot3[use_size_col] = [
-                _MISSING_LABEL if _is_missing(v) else str(v) for v in raw
-            ]
+        if use_size_col:
+            # px needs numeric sizes; reuse the 2D mapping (handles text/categorical/NaN)
+            plot3[use_size_col] = _marker_sizes(plot_df[use_size_col], default=_DEFAULT_SIZE)
 
         common = dict(
             data_frame=plot3,
