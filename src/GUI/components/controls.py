@@ -897,7 +897,7 @@ def build_scatter(
                 symbol="circle",
                 size=_DEFAULT_SIZE,
                 group="legend-size",
-                group_title=use_size_col,
+                group_title=f"Size: {use_size_col}",
                 first_in_group=True,
             )
             first = False
@@ -909,7 +909,7 @@ def build_scatter(
                 symbol="circle",
                 size=szmap[cat],
                 group="legend-size",
-                group_title=use_size_col,
+                group_title=f"Size: {use_size_col}",
                 first_in_group=first and i == 0,
             )
     elif size_const is not None:
