@@ -1377,21 +1377,22 @@ class ParallelConditionsModule:
         def _fill_cond_col(session_blob, current):
             cols = list((session_blob or {}).get("meta_columns", []))
             opts = [{"label": c, "value": c} for c in cols]
-            prefer = next((c for c in ("ConditionNumber", "Condition") if c in cols), None)
+            prefer = ("ConditionNr" if "ConditionNr" in cols else None)
             return opts, current if current in cols else prefer
 
         @app.callback(
             Output("par-subset-val", "options"),
             Output("par-subset-val", "value"),
             Input("par-subset-col", "value"),
-            State("session-store", "data"),
+            Input("session-store", "data"),
             State("par-subset-val", "value"),
         )
         def _fill_sub_val(col, session_blob, current):
-            session = session_from_store(session_blob)
-            if session.metadata is None or not col or col not in session.metadata.columns:
+            # Read the column from the store; session_from_store would reload the expression matrix.
+            raw = ((session_blob or {}).get("metadata") or {}).get(col) if col else None
+            if raw is None:
                 return [], []
-            levels = _natural_sorted(session.metadata[col].dropna().astype(str).unique())
+            levels = _natural_sorted(pd.Series(raw).dropna().astype(str).unique())
             opts = [{"label": v, "value": v} for v in levels]
             prefer = next((v for v in levels if v.lower() in {"true", "1", "yes"}), None)
             value = [v for v in (current or []) if v in levels] or ([prefer] if prefer else levels[:1])

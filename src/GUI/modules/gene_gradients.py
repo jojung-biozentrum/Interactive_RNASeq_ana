@@ -992,18 +992,14 @@ class GeneGradientsModule:
             Output("grad-subset-val", "options"),
             Output("grad-subset-val", "value"),
             Input("grad-subset-col", "value"),
-            State("session-store", "data"),
+            Input("session-store", "data"),
         )
         def _fill_subset_vals(col, session_blob):
-            session = session_from_store(session_blob)
-            if (
-                not col
-                or not session.ready
-                or session.metadata is None
-                or col not in session.metadata.columns
-            ):
+            # Read the column from the store; session_from_store would reload the expression matrix.
+            raw = ((session_blob or {}).get("metadata") or {}).get(col) if col else None
+            if raw is None:
                 return [], []
-            vals = _natural_sorted(session.metadata[col].dropna().unique())
+            vals = _natural_sorted(pd.Series(raw).dropna().unique())
             opts = [{"label": v, "value": v} for v in vals]
             default = ["True"] if "True" in vals else vals[:1]
             return opts, default
