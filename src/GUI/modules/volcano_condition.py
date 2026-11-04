@@ -595,7 +595,8 @@ def _group_pca_fig(
     df.index = df.index.astype(str)
     df["group"] = g.reindex(df.index).fillna("rest").astype(str)
     df["_id"] = df.index
-    present = [c for c in _BIN_ORDER if c in set(df["group"])]
+    # Draw "rest" first so it sits behind the bins; legend order stays _BIN_ORDER.
+    present = [c for c in ["rest", *_BIN_ORDER[:-1]] if c in set(df["group"])]
     fig = px.scatter(
         df.reset_index(drop=True),
         x="PC1",
@@ -606,6 +607,8 @@ def _group_pca_fig(
         custom_data=["_id"],
     )
     fig.update_traces(hovertemplate="%{customdata[0]}<extra></extra>")
+    for tr in fig.data:
+        tr.legendrank = _BIN_ORDER.index(tr.name)
     fig = equal_xy_axes(fig, df, "PC1", "PC2")
     title_dict = title if isinstance(title, dict) else _plotly_title(str(title))
     title_lines = str(title_dict.get("text", "")).count("<br>") + 1
