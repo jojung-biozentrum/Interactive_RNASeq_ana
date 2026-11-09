@@ -129,9 +129,9 @@ def _level_positions(order_levels) -> dict[str, float]:
 
 
 def _trajectory_keys(
-    meta: pd.DataFrame, subset_col: str | None, rep_map: dict | None, cond_col: str | None = None
+    meta: pd.DataFrame, subset_col: str | None, rep_map: dict | None
 ) -> pd.Series:
-    """Label per sample: "<subset value> / <entry of that value's replicate column>[ / condition]"."""
+    """Label per sample: "<subset value> / <entry of that value's replicate column>"."""
     keys = (
         meta[subset_col].astype(str)
         if subset_col in meta.columns
@@ -142,8 +142,6 @@ def _trajectory_keys(
         rows = base == value
         if col in meta.columns and rows.any():
             keys[rows] = value + " / " + meta.loc[rows, col].astype(str)
-    if cond_col in meta.columns:
-        keys = keys + " / " + meta[cond_col].astype(str)
     return keys
 
 

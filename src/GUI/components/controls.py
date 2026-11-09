@@ -648,11 +648,14 @@ def _legend_dummy(
     group: str,
     group_title: str | None,
     first_in_group: bool,
+    three_d: bool = False,
 ) -> None:
+    # A 2D dummy in a 3D-only figure would create stray 2D axes.
     fig.add_trace(
-        go.Scatter(
+        (go.Scatter3d if three_d else go.Scatter)(
             x=[None],
             y=[None],
+            **({"z": [None]} if three_d else {}),
             mode="markers",
             name=name,
             legendgroup=group,
@@ -661,6 +664,81 @@ def _legend_dummy(
             showlegend=True,
         )
     )
+
+
+def add_shape_size_legend(
+    fig: go.Figure,
+    df: pd.DataFrame,
+    *,
+    shape_col: str | None = None,
+    shape_const: str | None = None,
+    size_col: str | None = None,
+    size_const: float | None = None,
+    three_d: bool = False,
+) -> None:
+    """Legend entries for shape and size; titles are the column names."""
+    if shape_col:
+        smap = _shape_map_3d(df[shape_col]) if three_d else _shape_map(df[shape_col])
+        miss_sym = _coerce_symbol_3d(_MISSING_SYMBOL) if three_d else _MISSING_SYMBOL
+        entries = []
+        if _has_missing(df[shape_col]):
+            entries.append((_MISSING_LABEL, miss_sym))
+        entries += [(c, smap[c]) for c in _sorted_categories(df[shape_col])]
+        for i, (name, sym) in enumerate(entries):
+            _legend_dummy(
+                fig,
+                name=name,
+                color=_LEGEND_GREY,
+                symbol=sym,
+                size=_LEGEND_STD_SIZE,
+                group="legend-shape",
+                group_title=shape_col,
+                first_in_group=i == 0,
+                three_d=three_d,
+            )
+    elif shape_const:
+        _legend_dummy(
+            fig,
+            name=shape_const,
+            color=_LEGEND_GREY,
+            symbol=_coerce_symbol_3d(shape_const) if three_d else shape_const,
+            size=_LEGEND_STD_SIZE,
+            group="legend-shape",
+            group_title="Shape",
+            first_in_group=True,
+            three_d=three_d,
+        )
+
+    if size_col:
+        szmap = _size_map(df[size_col])
+        entries = []
+        if _has_missing(df[size_col]) and not pd.api.types.is_numeric_dtype(df[size_col]):
+            entries.append((_MISSING_LABEL, _DEFAULT_SIZE))
+        entries += [(c, szmap[c]) for c in _sorted_categories(df[size_col])]
+        for i, (name, sz) in enumerate(entries):
+            _legend_dummy(
+                fig,
+                name=name,
+                color=_LEGEND_GREY,
+                symbol="circle",
+                size=sz,
+                group="legend-size",
+                group_title=size_col,
+                first_in_group=i == 0,
+                three_d=three_d,
+            )
+    elif size_const is not None:
+        _legend_dummy(
+            fig,
+            name=str(size_const),
+            color=_LEGEND_GREY,
+            symbol="circle",
+            size=float(size_const),
+            group="legend-size",
+            group_title="Size",
+            first_in_group=True,
+            three_d=three_d,
+        )
 
 
 def build_scatter(
@@ -846,83 +924,14 @@ def build_scatter(
             first_in_group=True,
         )
 
-    if use_shape_col:
-        smap = _shape_map(plot_df[use_shape_col])
-        first = True
-        if _has_missing(plot_df[use_shape_col]):
-            _legend_dummy(
-                fig,
-                name=_MISSING_LABEL,
-                color=_LEGEND_GREY,
-                symbol=_MISSING_SYMBOL,
-                size=_LEGEND_STD_SIZE,
-                group="legend-shape",
-                group_title=use_shape_col,
-                first_in_group=True,
-            )
-            first = False
-        for i, cat in enumerate(_sorted_categories(plot_df[use_shape_col])):
-            _legend_dummy(
-                fig,
-                name=cat,
-                color=_LEGEND_GREY,
-                symbol=smap[cat],
-                size=_LEGEND_STD_SIZE,
-                group="legend-shape",
-                group_title=use_shape_col,
-                first_in_group=first and i == 0,
-            )
-    elif shape_const:
-        _legend_dummy(
-            fig,
-            name=shape_const,
-            color=_LEGEND_GREY,
-            symbol=shape_const,
-            size=_LEGEND_STD_SIZE,
-            group="legend-shape",
-            group_title="Shape",
-            first_in_group=True,
-        )
-
-    if use_size_col:
-        szmap = _size_map(plot_df[use_size_col])
-        first = True
-        if _has_missing(plot_df[use_size_col]) and not pd.api.types.is_numeric_dtype(
-            plot_df[use_size_col]
-        ):
-            _legend_dummy(
-                fig,
-                name=_MISSING_LABEL,
-                color=_LEGEND_GREY,
-                symbol="circle",
-                size=_DEFAULT_SIZE,
-                group="legend-size",
-                group_title=f"Size: {use_size_col}",
-                first_in_group=True,
-            )
-            first = False
-        for i, cat in enumerate(_sorted_categories(plot_df[use_size_col])):
-            _legend_dummy(
-                fig,
-                name=cat,
-                color=_LEGEND_GREY,
-                symbol="circle",
-                size=szmap[cat],
-                group="legend-size",
-                group_title=f"Size: {use_size_col}",
-                first_in_group=first and i == 0,
-            )
-    elif size_const is not None:
-        _legend_dummy(
-            fig,
-            name=str(size_const),
-            color=_LEGEND_GREY,
-            symbol="circle",
-            size=float(size_const),
-            group="legend-size",
-            group_title="Size",
-            first_in_group=True,
-        )
+    add_shape_size_legend(
+        fig,
+        plot_df,
+        shape_col=use_shape_col,
+        shape_const=shape_const,
+        size_col=use_size_col,
+        size_const=size_const,
+    )
 
     if not (use_color_col or color_const or use_shape_col or shape_const or use_size_col or size_const is not None):
         _legend_dummy(

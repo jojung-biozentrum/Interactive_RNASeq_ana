@@ -18,6 +18,7 @@ from ..components.controls import (
     _marker_sizes,
     _point_symbols,
     aesthetic_options,
+    add_shape_size_legend,
     apply_export_layout,
     graph_export_config,
     parse_aes_choice,
@@ -41,6 +42,7 @@ _GRAPH_CONFIG = graph_export_config("gene_expression_profiles")
 _EXPR_COLS = 3
 _PANEL = 380  # square panel cell (px)
 _PANEL_MARGIN = dict(l=55, r=90, t=56, b=50)  # colorbar + titles
+_LEGEND_W = 170  # extra right margin (px) for the shape/size legend
 _SEARCH_LIMIT = 80
 _GXP_RUNTIME: dict = {}
 
@@ -234,17 +236,34 @@ def _expr_pca_figure(
                 row=row,
                 col=col,
             )
+    n_before = len(fig.data)
+    add_shape_size_legend(
+        fig,
+        score_df,
+        shape_col=shape_col if shape_col in score_df.columns else None,
+        shape_const=shape_const,
+        size_col=size_col if size_col in score_df.columns else None,
+        size_const=size_const,
+        three_d=use_3d,
+    )
+    has_legend = len(fig.data) > n_before
     fig_w, fig_h = _gxp_fig_size(n_rows, n_cols, use_3d=use_3d)
+    margin = dict(**_PANEL_MARGIN)
+    if has_legend:
+        fig_w += _LEGEND_W
+        margin["r"] += _LEGEND_W
     fig.update_layout(title=_plotly_title("Gene expression on PCA"))
     apply_export_layout(
         fig,
         title_lines=1,
-        legend=False,
+        legend=has_legend,
+        # legend sits right of the colorbar (x in paper fraction of the plot area)
+        legend_kwargs=dict(x=1 + 80 / (fig_w - margin["l"] - margin["r"])),
         width=fig_w,
         height=fig_h,
         bottom=_PANEL_MARGIN["b"],
     )
-    fig.update_layout(margin=dict(**_PANEL_MARGIN))
+    fig.update_layout(margin=margin)
     return fig
 
 
@@ -555,6 +574,7 @@ class GeneExprPCAModule:
                 )
             except Exception as exc:  # noqa: BLE001
                 return empty, style, f"Plot error: {exc}", no_update
+            style = {"width": f"{fig.layout.width}px", "height": f"{fig_h}px"}
             _GXP_RUNTIME["score_df"] = score_df
             n_pcs = sum(
                 1
